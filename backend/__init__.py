@@ -1,0 +1,2 @@
+"""FinScope backend MVP package."""
+

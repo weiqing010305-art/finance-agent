@@ -1,0 +1,994 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FinScope · 案卷控制台</title>
+  <!--
+    FRONTEND MVP — 案卷控制台。
+    THESIS: 把公司研究呈现为可介入、可核查的案卷工作，而不是聊天窗口或指标仪表盘。
+    OWN-WORLD: 冷白案卷纸、墨色文字、松绿操作色、琥珀色待确认；细分隔线组织高密度信息。
+    STORY: 用户选择 Agent，观察研究进度，在关键节点暂停或纠偏，并逐条核查结论来源。
+    FIRST VIEWPORT: 左侧案卷导航，中间任务控制与报告，右侧证据/记录/待确认，底部固定追问与 Agent 选择。
+    FORM: 固定三栏案卷控制台；唯一纵向滚动区域是中间报告。
+  -->
+  <style>
+    :root{
+      --paper:#f2f5f2;
+      --sheet:#fbfcfb;
+      --white:#ffffff;
+      --ink:#17201d;
+      --text:#34403b;
+      --muted:#68746f;
+      --subtle:#87918d;
+      --line:#d9dfdb;
+      --line-strong:#c7d0cb;
+      --pine:#145a46;
+      --pine-dark:#0f4939;
+      --pine-soft:#dfede7;
+      --amber:#9a5c12;
+      --amber-soft:#f5ead8;
+      --red:#a13a36;
+      --red-soft:#f6e6e4;
+      --shadow:0 14px 34px rgba(23,32,29,.09);
+      --control-compact:36px;
+      --control-default:40px;
+      --control-primary:42px;
+      --font:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;overflow:hidden;background:var(--paper);color:var(--ink);font-family:var(--font)}
+    button,input,textarea{font:inherit}
+    button,a{touch-action:manipulation}
+    button{cursor:pointer}
+    button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid rgba(20,90,70,.28);outline-offset:3px}
+    .app{height:100vh;min-height:0;display:grid;grid-template-columns:232px minmax(620px,1fr);background:var(--sheet)}
+
+    .rail{height:100vh;overflow:hidden;padding:22px 16px 18px;background:#e9eeea;border-right:1px solid var(--line-strong);display:flex;flex-direction:column}
+    .brand{display:flex;align-items:center;gap:11px;padding:0 6px 22px}
+    .brand-mark{display:grid;place-items:center;width:30px;height:30px;border-radius:8px 8px 8px 2px;background:var(--pine);color:#fff;font-size:12px;font-weight:800;box-shadow:0 6px 14px rgba(20,90,70,.2)}
+    .brand-copy strong{display:block;font-size:15px;letter-spacing:-.02em}
+    .brand-copy span{display:block;margin-top:2px;color:var(--muted);font-size:12px}
+    .new-case{width:100%;min-height:44px;border:0;border-radius:10px;background:var(--pine);color:#fff;font-weight:700;box-shadow:0 8px 18px rgba(20,90,70,.16)}
+    .rail-label{margin:24px 8px 9px;color:var(--muted);font-size:12px;font-weight:600}
+    .case-list{display:grid;gap:5px}
+    .case{width:100%;border:0;border-radius:9px;background:transparent;padding:10px;text-align:left;color:var(--text)}
+    .case:hover{background:rgba(255,255,255,.58)}
+    .case.selected{background:rgba(255,255,255,.82)}
+    .case strong{display:block;font-size:13px;line-height:1.4}
+    .case span{display:block;margin-top:4px;color:var(--muted);font-size:12px}
+    .rail-note{margin-top:auto;padding:11px 9px 0;border-top:1px solid rgba(104,116,111,.18);color:var(--muted);font-size:11px;line-height:1.55}
+
+    .workspace{height:100vh;min-width:0;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto;border-right:1px solid var(--line-strong);background:var(--sheet)}
+    .taskbar{padding:12px 28px;background:rgba(251,252,251,.97);border-bottom:1px solid var(--line)}
+    .task-meta{display:flex;align-items:center;justify-content:space-between;gap:18px}
+    .company{display:flex;align-items:center;gap:9px;min-width:0}
+    .company strong{font-size:14px}
+    .ticker{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+    .live-status{display:flex;align-items:center;gap:7px;color:var(--pine);font-size:12px;font-weight:700}
+    .task-meta-actions{display:flex;align-items:center;gap:12px}
+    .search-results-toggle{display:inline-flex;min-height:36px;align-items:center;gap:6px;border:1px solid var(--line-strong);border-radius:999px;background:var(--white);padding:0 12px;color:var(--text);font-size:12px;font-weight:650}
+    .search-results-toggle:hover:not(:disabled){border-color:#8faa9d;color:var(--pine)}
+    .search-results-toggle:disabled{cursor:not-allowed;opacity:.5}
+    .live-dot{width:8px;height:8px;border-radius:50%;background:var(--pine);box-shadow:0 0 0 4px var(--pine-soft);animation:pulse 1.8s ease-out infinite}
+    @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(20,90,70,.32)}70%,100%{box-shadow:0 0 0 7px rgba(20,90,70,0)}}
+    .new-case:disabled{cursor:not-allowed;opacity:.48;box-shadow:none}
+
+    .research-turn{padding:30px 52px 18px}
+    .research-turn[hidden]{display:none}
+    .user-message{display:flex;justify-content:flex-end}
+    .user-bubble{max-width:min(78%,720px);padding:12px 17px;border-radius:20px 20px 6px 20px;background:#edf3f0;color:var(--ink)}
+    .user-bubble p{margin:0;font-size:15px;line-height:1.65;text-wrap:pretty}
+    .user-bubble small{display:block;margin-top:5px;color:var(--muted);font-size:11px;text-align:right}
+    .agent-trace{max-width:78ch;margin:12px 52px 60px}
+    .agent-trace[hidden]{display:none}
+    .agent-trace-toggle{display:flex;min-height:40px;align-items:center;gap:9px;border:0;border-radius:8px;background:transparent;padding:0 8px 0 0;color:var(--text);text-align:left}
+    .agent-trace-toggle:hover{color:var(--pine)}
+    .agent-trace-toggle:focus-visible{outline:2px solid var(--pine);outline-offset:3px}
+    .trace-orbit{display:grid;width:22px;height:22px;place-items:center;color:var(--pine)}
+    .trace-orbit svg{width:20px;height:20px}
+    .agent-trace-state{font-size:14px;font-weight:650;letter-spacing:-.01em}
+    .trace-chevron{width:16px;height:16px;color:var(--muted);transition:transform .18s ease-out}
+    .agent-trace-toggle[aria-expanded="false"] .trace-chevron{transform:rotate(-90deg)}
+    .agent-trace-toggle[data-tone="failed"]{color:var(--red)}
+    .agent-trace-toggle[data-tone="paused"]{color:var(--amber)}
+    .agent-trace-list{display:grid;margin:12px 0 0 3px}
+    .agent-trace-list[hidden]{display:none}
+    .trace-row{position:relative;display:grid;grid-template-columns:16px minmax(0,1fr);gap:12px;padding:0 0 16px;color:var(--muted);font-size:13px;line-height:1.65}
+    .trace-row:not(:last-child)::after{content:"";position:absolute;left:4px;top:14px;bottom:0;width:1px;background:var(--line-strong)}
+    .trace-marker{position:relative;z-index:1;width:9px;height:9px;margin-top:6px;border:2px solid var(--sheet);border-radius:50%;background:var(--pine);box-shadow:0 0 0 1px #9db9ae}
+    .trace-copy{min-width:0}
+    .trace-row time{display:none}
+    .trace-row p{min-width:0;margin:0;overflow-wrap:anywhere}
+    .trace-empty{margin:0 0 12px 28px;color:var(--muted);font-size:13px;line-height:1.6}
+
+    .document-scroll{min-height:0;overflow-y:auto;overscroll-behavior-y:contain;scrollbar-gutter:stable;background:var(--sheet)}
+    .case-head{padding:30px 52px 24px;border-bottom:1px solid var(--line)}
+    .kicker{display:flex;align-items:center;gap:8px;margin-bottom:13px;color:var(--muted);font-size:12px}
+    .kicker b{padding:4px 8px;border-radius:999px;background:var(--pine-soft);color:var(--pine);font-size:11px}
+    .case-head h1{max-width:none;margin:0 0 12px;font-size:32px;line-height:1.16;letter-spacing:-.035em;text-wrap:balance}
+    .case-head p{max-width:62ch;margin:0;color:var(--muted);font-size:14px;line-height:1.7}
+    .report-tabs{display:flex;gap:24px;padding:0 52px;border-bottom:1px solid var(--line)}
+    .report-tabs button{min-height:46px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);font-size:14px}
+    .report-tabs button.active{border-bottom-color:var(--pine);color:var(--pine);font-weight:750}
+    .report{padding:34px 52px 30px}
+    .summary{margin:0 0 30px;padding:18px 20px;background:#edf4f0;border-top:1px solid #afc9bd;border-bottom:1px solid #afc9bd}
+    .summary p{margin:0;color:#1b3c31;font-size:15px;line-height:1.75}
+    .streaming-report{max-width:70ch;margin:0 0 30px;color:var(--text);font-size:15px;line-height:1.85}
+    .streaming-report[hidden]{display:none}
+    .streaming-report h3{margin:28px 0 10px;color:var(--ink);font-size:19px;line-height:1.35;letter-spacing:-.015em}
+    .streaming-report p{margin:0 0 14px;text-wrap:pretty}
+    .streaming-report ul{margin:10px 0 18px;padding-left:1.45em}
+    .streaming-report li{margin:8px 0;padding-left:.3em;text-wrap:pretty}
+    .streaming-report li::marker{color:var(--muted);font-weight:650}
+    .streaming-cursor{display:inline-block;width:8px;height:1.15em;margin-left:2px;border-radius:999px;background:var(--pine);vertical-align:-.18em;animation:cursorBlink 1s steps(2,end) infinite}
+    @keyframes cursorBlink{50%{opacity:.15}}
+    .section{position:relative;padding:0 0 8px}
+    .section h3{margin:30px 0 10px;font-size:19px;line-height:1.35;letter-spacing:-.015em}
+    .section-content{max-width:68ch;color:var(--text);font-size:15px;line-height:1.82}
+    .section-content p{margin:0 0 14px;text-wrap:pretty}
+    .research-points{margin:12px 0 18px;padding-left:1.45em}
+    .research-points li{margin:8px 0;padding-left:.3em;text-wrap:pretty}
+    .research-points li::marker{color:var(--muted);font-weight:650}
+    .research-points strong{color:var(--ink);font-weight:750}
+    .section-citations{display:flex;flex-wrap:wrap;gap:2px;margin:12px 0 16px}
+    .section-actions{position:absolute;right:0;top:24px;display:flex;gap:5px;opacity:0;transform:translateY(3px);transition:opacity .18s ease,transform .18s ease}
+    .section:hover .section-actions,.section:focus-within .section-actions{opacity:1;transform:none}
+    .section-actions button{min-height:var(--control-compact);border:1px solid var(--line);border-radius:8px;background:var(--white);padding:0 11px;color:var(--muted);font-size:12px}
+    .section-actions button:hover{border-color:#9fb3aa;color:var(--pine)}
+    .cite{position:relative;display:inline-grid;place-items:center;width:22px;height:22px;margin:0 3px;border:1px solid #91ad9f;border-radius:50%;background:#edf4f0;color:var(--pine);font-size:11px;font-weight:800;text-decoration:none;vertical-align:2px}
+    .cite-card{pointer-events:none;position:absolute;z-index:30;left:50%;bottom:calc(100% + 10px);width:300px;padding:13px 14px;border:1px solid var(--line-strong);border-radius:10px;background:var(--white);color:var(--text);box-shadow:var(--shadow);text-align:left;opacity:0;transform:translate(-50%,5px);transition:opacity .16s ease,transform .16s ease}
+    .cite:hover .cite-card,.cite:focus .cite-card{opacity:1;transform:translate(-50%,0)}
+    .cite-card strong{display:block;margin-bottom:4px;color:var(--ink);font-size:13px;line-height:1.4}
+    .cite-card span{display:block;color:var(--muted);font-size:12px;font-weight:400;line-height:1.5}
+    .metrics{display:grid;grid-template-columns:repeat(3,1fr);margin:24px 0 30px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+    .metric{padding:16px 14px;border-right:1px solid var(--line)}
+    .metric:last-child{border-right:0}
+    .metric span{display:block;color:var(--muted);font-size:12px}
+    .metric strong{display:block;margin-top:7px;font-size:18px;font-variant-numeric:tabular-nums}
+    .metric em{display:block;margin-top:4px;color:var(--pine);font-size:11px;font-style:normal}
+    .risk{margin-top:28px;padding:15px 0;border-top:1px solid #d9b779;border-bottom:1px solid #d9b779;color:#6f4b1c!important}
+
+    .composer{padding:12px 28px 15px;border-top:1px solid var(--line);background:rgba(242,245,242,.98);box-shadow:0 -12px 30px rgba(23,32,29,.05)}
+    .suggestions{display:flex;align-items:center;gap:7px;overflow-x:auto;scrollbar-width:none}
+    .suggestions{margin-bottom:8px}
+    .suggestions button{flex:0 0 auto;min-height:38px;border:1px solid var(--line);border-radius:999px;background:var(--white);padding:0 14px;color:var(--text);font-size:13px}
+    .suggestions button:hover{border-color:#9eb2a8;color:var(--pine)}
+    .composer-box{position:relative;border:1px solid var(--line-strong);border-radius:20px;background:var(--white);padding:14px 14px 10px;box-shadow:0 8px 22px rgba(23,32,29,.07)}
+    .composer-box:focus-within{border-color:#9eb7ab;box-shadow:0 10px 26px rgba(23,32,29,.09)}
+    .composer-box textarea{display:block;width:100%;min-height:62px;max-height:150px;resize:none;border:0;outline:0;background:transparent;color:var(--ink);font-size:14px;line-height:1.65}
+    .composer-box textarea::placeholder{color:#78837e}
+    .composer-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:10px}
+    .composer-tools{display:flex;min-width:0;align-items:center;gap:8px}
+    .agent-picker{position:relative;flex:0 0 auto}
+    .agent-picker-toggle{display:inline-flex;min-height:38px;align-items:center;gap:8px;border:1px solid #b8ccc2;border-radius:999px;background:#f5faf7;padding:0 12px;color:var(--pine);font-size:12px;font-weight:700}
+    .agent-picker-toggle:hover,.agent-picker-toggle[aria-expanded="true"]{border-color:#7fa492;background:var(--pine-soft)}
+    .agent-picker-dot{width:8px;height:8px;border-radius:50%;background:var(--pine);box-shadow:0 0 0 3px rgba(20,90,70,.12)}
+    .agent-picker-chevron{width:14px;height:14px;transition:transform .18s ease-out}
+    .agent-picker-toggle[aria-expanded="true"] .agent-picker-chevron{transform:rotate(180deg)}
+    .agent-picker-menu{position:absolute;z-index:60;left:0;bottom:calc(100% + 10px);width:280px;padding:6px;border:1px solid var(--line-strong);border-radius:14px;background:var(--white);box-shadow:0 16px 36px rgba(23,32,29,.14)}
+    .agent-picker-menu[hidden]{display:none}
+    .agent-option{position:relative;display:block;width:100%;min-height:58px;border:0;border-radius:10px;background:transparent;padding:9px 42px 9px 12px;color:var(--text);text-align:left}
+    .agent-option:hover:not(:disabled){background:#edf4f0}
+    .agent-option strong{display:block;font-size:13px;line-height:1.35}
+    .agent-option small{display:block;margin-top:4px;color:var(--muted);font-size:11px;line-height:1.35}
+    .agent-option-state{position:absolute;right:12px;top:11px;color:var(--pine);font-size:10px;font-weight:750}
+    .agent-option:disabled{cursor:not-allowed;opacity:.52}
+    .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+    .send{display:grid;width:42px;min-width:42px;height:42px;place-items:center;border:0;border-radius:50%;background:var(--pine);color:#fff;font-size:0;box-shadow:0 6px 14px rgba(20,90,70,.18)}
+    .send-icon{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    .send:hover{background:var(--pine-dark)}
+    .send.is-stop .send-icon{display:none}
+    .send.is-stop::before{content:"";width:12px;height:12px;border-radius:2px;background:#fff;transform:none}
+    .send:disabled{cursor:not-allowed;opacity:.58;box-shadow:none}
+
+
+    .evidence{position:fixed;z-index:70;top:0;right:0;width:min(420px,100vw);height:100vh;overflow:hidden;background:var(--white);border-left:1px solid var(--line-strong);box-shadow:-18px 0 42px rgba(23,32,29,.12);display:flex;flex-direction:column;transform:translateX(102%);visibility:hidden;transition:transform .24s cubic-bezier(.2,.8,.2,1),visibility 0s linear .24s}
+    .evidence.open{transform:translateX(0);visibility:visible;transition-delay:0s}
+    .e-head{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:72px;padding:0 20px;border-bottom:1px solid var(--line)}
+    .e-title{display:flex;align-items:baseline;gap:9px}
+    .e-head h2{margin:0;font-size:17px}
+    .e-head span{color:var(--muted);font-size:11px}
+    .drawer-close{display:grid;width:40px;height:40px;place-items:center;border:0;border-radius:50%;background:transparent;color:var(--muted);font-size:24px;line-height:1}
+    .drawer-close:hover{background:var(--paper);color:var(--ink)}
+    .source-list{min-height:0;overflow-y:auto;padding:4px 20px 28px}
+    .source{position:relative;display:block;padding:17px 24px 18px 0;border-bottom:1px solid var(--line);color:var(--text);text-decoration:none}
+    .source::after{content:"↗";position:absolute;right:2px;top:42px;color:var(--subtle);font-size:13px;transition:color .16s ease-out,transform .16s ease-out}
+    .source:hover{color:var(--pine)}
+    .source:hover::after{color:var(--pine);transform:translate(1px,-1px)}
+    .source:focus-visible{border-radius:6px;outline:2px solid var(--pine);outline-offset:-2px}
+    .source-meta{display:flex;align-items:center;gap:7px;margin-bottom:8px;color:var(--muted);font-size:11px}
+    .source-num{display:inline-grid;place-items:center;width:22px;height:22px;border:1px solid #9eb6aa;border-radius:50%;color:var(--pine);font-size:10px;font-weight:800}
+    .source-site{max-width:150px;overflow:hidden;font-weight:650;text-overflow:ellipsis;white-space:nowrap}
+    .source-domain{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .source h3{margin:0;color:var(--ink);font-size:15px;line-height:1.45;text-wrap:pretty}
+    .source p{display:-webkit-box;margin:8px 0 0;overflow:hidden;color:var(--muted);font-size:12px;line-height:1.6;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+    .empty-state{margin:0;padding:20px 4px;color:var(--muted);font-size:12px;line-height:1.65}
+
+    @media(max-width:1020px){
+      .app{grid-template-columns:210px minmax(560px,1fr)}
+    }
+    @media(max-width:760px){
+      html,body{height:auto;overflow:auto}
+      body{padding-bottom:180px}
+      .app{display:block;height:auto}
+      .rail,.workspace{height:auto;overflow:visible}
+      .rail{padding:12px;border-right:0;border-bottom:1px solid var(--line)}
+      .brand{padding-bottom:10px}
+      .new-case,.rail-label,.case-list,.rail-note{display:none}
+      .workspace{display:block;border-right:0}
+      .taskbar{padding:13px 15px}
+      .task-meta{align-items:flex-start}
+      .task-meta-actions{align-items:flex-end;flex-direction:column-reverse;gap:7px}
+      .search-results-toggle{min-height:34px;padding:0 10px}
+      .research-turn{padding:24px 20px 12px}
+      .user-bubble{max-width:88%}
+      .agent-trace{max-width:none;margin:20px 20px 40px}
+      .document-scroll{overflow:visible}
+      .case-head,.report{padding-left:20px;padding-right:20px}
+      .case-head h1{font-size:28px}
+      .report-tabs{padding:0 20px;overflow:auto}
+      .section-actions{position:static;margin:0 0 9px;opacity:1;transform:none}
+      .metrics{grid-template-columns:1fr}
+      .metric{border-right:0;border-bottom:1px solid var(--line)}
+      .metric:last-child{border-bottom:0}
+      .composer{position:fixed;z-index:40;left:0;right:0;bottom:0;padding:8px 10px 10px}
+      .composer-box textarea{min-height:40px}
+      .agent-picker-menu{position:fixed;right:10px;bottom:142px;left:10px;width:auto}
+      .evidence{width:100vw;height:100dvh;border-left:0}
+    }
+    @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail" aria-label="案卷导航">
+      <div class="brand"><span class="brand-mark">FS</span><div class="brand-copy"><strong>FinScope</strong><span>公司研究工作台</span></div></div>
+      <button class="new-case" id="new-case">＋ 新建研究</button>
+      <div class="rail-label">公司案卷</div>
+      <div class="case-list" id="case-list">
+        <p class="empty-state">正在读取本地案卷…</p>
+      </div>
+      <div class="rail-note">三 Agent 统一研究前端<br>联网研究只在你明确点击后启动</div>
+    </aside>
+
+    <main class="workspace">
+      <header class="taskbar">
+        <div class="task-meta">
+          <div class="company"><strong id="company-name">尚未选择公司</strong><span class="ticker" id="company-ticker">等待创建案卷</span></div>
+          <div class="task-meta-actions">
+            <div class="live-status" id="live-status" aria-live="polite"><span class="live-dot"></span><span>正在连接研究服务</span></div>
+            <button class="search-results-toggle" id="search-results-toggle" type="button" aria-expanded="false" aria-controls="search-results-drawer" disabled>查看搜索结果 <span id="search-result-count">0</span></button>
+          </div>
+        </div>
+      </header>
+
+      <div class="document-scroll" id="document-scroll">
+        <section class="research-turn" id="research-turn" aria-label="当前研究对话" hidden>
+          <div class="user-message"><div class="user-bubble"><p id="research-question">腾讯近三年利润增长由哪些业务驱动？这种增长是否可持续？</p><small id="task-meta-line">财报分析 Agent · 标准深度 · 等待后端</small></div></div>
+        </section>
+        <header class="case-head">
+          <div class="kicker"><b id="report-kicker">新公司案卷</b><span>财报分析 Agent · 七部分候选结构</span><span>·</span><span id="report-provider">OpenRouter 联网研究</span></div>
+          <h1 id="report-title">从一家你关心的公司开始</h1>
+          <p id="report-description">直接提出公司研究问题，Agent 会自动识别公司、股票代码和市场，并生成带数字引用的调查结果。</p>
+        </header>
+        <nav class="report-tabs" aria-label="案卷内容切换"><button class="active">研究报告</button><button>关键数据</button><button>案卷资料</button></nav>
+        <article class="report">
+          <div class="summary"><p id="report-summary"><strong>准备研究：</strong>在下方输入公司研究问题，Agent 会自动识别研究对象并启动调查。</p></div>
+          <div class="streaming-report" id="report-draft" hidden aria-live="polite"></div>
+          <div id="report-body"><p class="empty-state">研究完成后，带句子级引用的报告将显示在这里。</p></div>
+        </article>
+        <section class="agent-trace" aria-label="Agent 工作轨迹" id="agent-trace" hidden>
+          <button class="agent-trace-toggle" id="agent-trace-toggle" type="button" aria-expanded="true" aria-controls="agent-trace-list" data-tone="running">
+            <span class="trace-orbit" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5c2.3 0 4.1 3.8 4.1 8.5s-1.8 8.5-4.1 8.5S7.9 16.7 7.9 12 9.7 3.5 12 3.5Z" stroke="currentColor" stroke-width="1.5"/><path d="M4.6 7.8c1.2-2 5.4-1.6 9.4.8s6.2 6 5 8-5.4 1.6-9.4-.8-6.2-6-5-8Z" stroke="currentColor" stroke-width="1.5"/></svg></span>
+            <strong class="agent-trace-state" id="agent-trace-state">思考中</strong>
+            <svg class="trace-chevron" aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="agent-trace-list" id="agent-trace-list" aria-live="polite"><p class="trace-empty">正在准备研究计划…</p></div>
+        </section>
+      </div>
+
+      <section class="composer" aria-label="继续追问">
+        <div class="suggestions"><button data-prompt="补查支持相反观点的证据">补查反面证据</button><button data-prompt="对比近三年自由现金流">对比现金流</button><button data-prompt="重点分析利润质量">分析利润质量</button></div>
+        <div class="composer-box">
+          <textarea id="composer-input" rows="2" aria-label="研究问题或继续追问" placeholder="直接输入研究问题，例如：腾讯近三年利润增长是否可持续？"></textarea>
+          <div class="composer-foot">
+            <div class="composer-tools">
+              <div class="agent-picker">
+                <button class="agent-picker-toggle" id="agent-picker-toggle" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="agent-picker-menu">
+                  <span class="agent-picker-dot" aria-hidden="true"></span><span>财报分析 Agent</span>
+                  <svg class="agent-picker-chevron" aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <div class="agent-picker-menu" id="agent-picker-menu" role="listbox" aria-label="选择研究 Agent" hidden>
+                  <button class="agent-option" type="button" role="option" aria-selected="true" data-agent="financial"><strong>财报分析 Agent</strong><small>财报、公告与经营质量</small><span class="agent-option-state">当前</span></button>
+                  <button class="agent-option" type="button" role="option" aria-selected="false" disabled><strong>市场分析 Agent</strong><small>行情、指标与风险数据</small><span class="agent-option-state">开发中</span></button>
+                  <button class="agent-option" type="button" role="option" aria-selected="false" disabled><strong>公司研究 Agent</strong><small>编排专业 Agent 生成案卷</small><span class="agent-option-state">后续</span></button>
+                </div>
+              </div>
+              <span class="sr-only" id="composer-hint">Agent 会自动识别公司、股票代码和市场 · Enter 发送</span>
+            </div>
+            <button class="send" id="send" type="button" aria-label="发送"><svg class="send-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 20V4m0 0-6.5 6.5M12 4l6.5 6.5"/></svg><span class="sr-only">发送</span></button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="evidence" id="search-results-drawer" aria-label="搜索结果" aria-hidden="true">
+      <div class="e-head"><div class="e-title"><h2>搜索结果</h2><span id="evidence-count">0 条</span></div><button class="drawer-close" id="search-results-close" type="button" aria-label="关闭搜索结果">×</button></div>
+      <div class="source-list" id="source-list"><p class="empty-state">任务完成后显示搜索结果和原文链接。</p></div>
+    </aside>
+  </div>
+
+  <script>
+    const API_BASE = 'http://127.0.0.1:8780/api';
+    const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+    
+    const ui = {
+      scrollArea: document.getElementById('document-scroll'),
+      researchTurn: document.getElementById('research-turn'),
+      input: document.getElementById('composer-input'),
+      status: document.getElementById('live-status'),
+      newCase: document.getElementById('new-case'),
+      meta: document.getElementById('task-meta-line'),
+      reportTitle: document.getElementById('report-title'),
+      reportSummary: document.getElementById('report-summary'),
+      reportDraft: document.getElementById('report-draft'),
+      reportBody: document.getElementById('report-body'),
+      evidenceCount: document.getElementById('evidence-count'),
+      searchResultCount: document.getElementById('search-result-count'),
+      searchResultsToggle: document.getElementById('search-results-toggle'),
+      searchResultsDrawer: document.getElementById('search-results-drawer'),
+      searchResultsClose: document.getElementById('search-results-close'),
+      sourceList: document.getElementById('source-list'),
+      caseList: document.getElementById('case-list'),
+      companyName: document.getElementById('company-name'),
+      companyTicker: document.getElementById('company-ticker'),
+      reportKicker: document.getElementById('report-kicker'),
+      reportProvider: document.getElementById('report-provider'),
+      reportDescription: document.getElementById('report-description'),
+      send: document.getElementById('send'),
+      composerHint: document.getElementById('composer-hint'),
+      agentPickerToggle: document.getElementById('agent-picker-toggle'),
+      agentPickerMenu: document.getElementById('agent-picker-menu'),
+      traceSection: document.getElementById('agent-trace'),
+      traceToggle: document.getElementById('agent-trace-toggle'),
+      traceList: document.getElementById('agent-trace-list'),
+      traceState: document.getElementById('agent-trace-state'),
+    };
+    
+    const runtime = { taskId: null, taskStatus: null, stream: null, eventIds: new Set(), enrichedEvidenceTasks: new Set(), evidence: [], draftText: '', startedAt: null, finishedAt: null, traceTimer: null, traceTone: 'running', provider: 'openrouter', company: '', symbol: '', market: 'HK', question: '', depth: 'standard' };
+    
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>'"]/g, character => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+      })[character]);
+    }
+    
+    function safeUrl(value) {
+      try {
+        const parsed = new URL(value);
+        return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '#';
+      } catch {
+        return '#';
+      }
+    }
+
+    function sourceDomain(value) {
+      try {
+        return new URL(value).hostname.replace(/^www\./, '');
+      } catch {
+        return '网页来源';
+      }
+    }
+
+    function isUrlTitle(value, url = '') {
+      const title = String(value || '').trim();
+      return !title || title === String(url || '').trim() || /^https?:\/\//i.test(title);
+    }
+
+    function displaySourceTitle(source, fallbackSite = '') {
+      const title = String(source?.title || '').trim();
+      if (!isUrlTitle(title, source?.url)) return title;
+      return `${fallbackSite || source?.publisher || sourceDomain(source?.url)} 网页内容`;
+    }
+
+    function setSearchResultsOpen(open) {
+      const canOpen = !ui.searchResultsToggle.disabled;
+      const next = Boolean(open && canOpen);
+      ui.searchResultsDrawer.classList.toggle('open', next);
+      ui.searchResultsDrawer.setAttribute('aria-hidden', String(!next));
+      ui.searchResultsToggle.setAttribute('aria-expanded', String(next));
+      if (next) ui.searchResultsClose.focus();
+    }
+    
+    function setStatus(message, tone = 'running') {
+      const colors = { running: '#145a46', paused: '#9a5c12', completed: '#145a46', failed: '#a13a36', cancelled: '#68746f', offline: '#68746f' };
+      const color = colors[tone] || colors.running;
+      const dot = tone === 'running' ? '<span class="live-dot"></span>' : `<span style="width:8px;height:8px;border-radius:50%;background:${color}"></span>`;
+      ui.status.innerHTML = `${dot}<span style="color:${color}">${escapeHtml(message)}</span>`;
+    }
+
+    function formatElapsed(milliseconds) {
+      const totalSeconds = Math.max(1, Math.floor(milliseconds / 1000));
+      if (totalSeconds < 60) return `${totalSeconds} 秒`;
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return seconds ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`;
+    }
+
+    function stopTraceClock() {
+      if (!runtime.traceTimer) return;
+      clearInterval(runtime.traceTimer);
+      runtime.traceTimer = null;
+    }
+
+    function updateTraceClock() {
+      if (!runtime.startedAt || ui.traceSection.hidden) return;
+      const elapsed = formatElapsed((runtime.finishedAt || Date.now()) - runtime.startedAt);
+      const labels = {
+        completed: `已思考（用时 ${elapsed}）`,
+        failed: `思考中断（用时 ${elapsed}）`,
+        cancelled: `已停止思考（用时 ${elapsed}）`,
+        paused: `已暂停（用时 ${elapsed}）`,
+      };
+      ui.traceState.textContent = labels[runtime.traceTone] || `思考中（已用时 ${elapsed}）`;
+    }
+
+    function startTraceClock() {
+      if (runtime.traceTimer) return;
+      updateTraceClock();
+      runtime.traceTimer = setInterval(updateTraceClock, 1000);
+    }
+
+    function providerLabel(provider = runtime.provider) {
+      return provider === 'deepseek' ? 'DeepSeek 联网研究' : provider === 'openrouter' ? 'OpenRouter 联网研究' : '联网研究';
+    }
+
+    function setTraceExpanded(expanded) {
+      ui.traceToggle.setAttribute('aria-expanded', String(expanded));
+      ui.traceList.hidden = !expanded;
+    }
+
+    function setAgentPickerExpanded(expanded) {
+      ui.agentPickerToggle.setAttribute('aria-expanded', String(expanded));
+      ui.agentPickerMenu.hidden = !expanded;
+    }
+
+    function setTraceState(message, tone = 'running') {
+      if (message === '等待任务') {
+        stopTraceClock();
+        ui.traceSection.hidden = true;
+        return;
+      }
+      ui.traceSection.hidden = false;
+      ui.traceToggle.dataset.tone = tone;
+      runtime.traceTone = tone;
+      if (tone === 'running' || tone === 'queued') startTraceClock();
+      else stopTraceClock();
+      updateTraceClock();
+    }
+
+    function setComposerAction(status = runtime.taskStatus) {
+      const active = Boolean(runtime.taskId) && !TERMINAL.has(status);
+      ui.send.classList.toggle('is-stop', active);
+      const label = active ? '停止研究' : '发送';
+      ui.send.setAttribute('aria-label', label);
+      ui.send.title = active ? '停止当前研究' : '发送';
+      ui.composerHint.textContent = active
+        ? '研究进行中 · 点击右侧按钮停止，停止后可继续研究'
+        : 'Agent 会自动识别公司、股票代码和市场 · Enter 发送';
+    }
+
+    function showReadyState(message = '研究服务已连接 · 可以直接提问') {
+      closeStream();
+      stopTraceClock();
+      runtime.taskId = null;
+      runtime.taskStatus = null;
+      runtime.company = '';
+      runtime.symbol = '';
+      runtime.question = '';
+      runtime.startedAt = null;
+      runtime.finishedAt = null;
+      localStorage.removeItem('finscope.activeTaskId');
+      ui.companyName.textContent = '尚未选择公司';
+      ui.companyTicker.textContent = 'Agent 将自动识别研究对象';
+      ui.researchTurn.hidden = true;
+      document.getElementById('research-question').textContent = '直接输入一个公司研究问题';
+      ui.meta.textContent = '财报分析 Agent · 等待启动';
+      ui.reportKicker.textContent = '新公司案卷';
+      ui.reportProvider.textContent = providerLabel();
+      ui.reportTitle.textContent = '从一家你关心的公司开始';
+      ui.reportDescription.textContent = '直接提出公司研究问题，Agent 会自动识别公司、股票代码和市场，并生成带数字引用的调查结果。';
+      ui.reportSummary.innerHTML = '<strong>准备研究：</strong>在下方输入公司研究问题，Agent 会自动识别研究对象并启动调查。';
+      resetStreamingDraft();
+      ui.reportBody.innerHTML = '<p class="empty-state">尚未创建研究任务。</p>';
+      setComposerAction(null);
+      ui.traceList.innerHTML = '<p class="trace-empty">创建研究后，这里会实时显示 Agent 正在执行的工作。</p>';
+      setTraceState('等待任务', 'completed');
+      renderEvidence([]);
+      setStatus(message, 'completed');
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || `请求失败 (${response.status})`);
+      }
+      return response.json();
+    }
+    
+    function appendLog(event) {
+      if (event.id && runtime.eventIds.has(event.id)) return;
+      if (event.id) runtime.eventIds.add(event.id);
+      ui.traceList.querySelector('.trace-empty')?.remove();
+      const time = new Date(event.created_at || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      const traceRow = document.createElement('div');
+      traceRow.className = 'trace-row';
+      traceRow.innerHTML = `<span class="trace-marker"></span><div class="trace-copy"><time>${escapeHtml(time)}</time><p>${escapeHtml(event.message)}</p></div>`;
+      ui.traceList.append(traceRow);
+      requestAnimationFrame(() => {
+        const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+        traceRow.scrollIntoView({ behavior, block: 'end' });
+      });
+    }
+    
+    function citationMarkup(number, evidenceMap) {
+      const evidence = evidenceMap.get(number);
+      if (!evidence) return '';
+      const title = displaySourceTitle(evidence, evidence.publisher || sourceDomain(evidence.url));
+      return `<a class="cite" href="${escapeHtml(safeUrl(evidence.url))}" target="_blank" rel="noreferrer">${number}<span class="cite-card"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(evidence.publisher)} · ${escapeHtml(evidence.source_type)}<br>${escapeHtml(evidence.excerpt)}</span></span></a>`;
+    }
+
+    function pointMarkup(text, label = '') {
+      const cleaned = String(text || '').trim();
+      if (!cleaned) return '';
+      if (label) return `<li><strong>${escapeHtml(label)}：</strong>${escapeHtml(cleaned)}</li>`;
+      const match = cleaned.match(/^([^：:]{2,24})[：:]\s*(.+)$/s);
+      return match
+        ? `<li><strong>${escapeHtml(match[1])}：</strong>${escapeHtml(match[2])}</li>`
+        : `<li>${escapeHtml(cleaned)}</li>`;
+    }
+
+    function legacyNumberedContent(content) {
+      const text = String(content || '').trim();
+      const matches = [...text.matchAll(/(^|[^\d])(\d{1,2})(?:[)）、]|\.(?!\d))\s*/g)];
+      if (matches.length < 2) return null;
+      const markerIndex = match => match.index + (match[1]?.length || 0);
+      const intro = text.slice(0, markerIndex(matches[0])).trim();
+      const items = matches.map((match, index) => {
+        const start = match.index + match[0].length;
+        const end = matches[index + 1] ? markerIndex(matches[index + 1]) : text.length;
+        return text.slice(start, end).trim();
+      }).filter(Boolean);
+      return { intro, items };
+    }
+
+    function formatResearchContent(content, points = []) {
+      const structuredPoints = Array.isArray(points)
+        ? points.filter(point => point && (point.text || point.label))
+        : [];
+      if (structuredPoints.length) {
+        const intro = String(content || '').trim();
+        const introMarkup = intro ? `<p>${escapeHtml(intro)}</p>` : '';
+        const list = structuredPoints.map(point => pointMarkup(point.text, point.label)).join('');
+        return `${introMarkup}<ul class="research-points">${list}</ul>`;
+      }
+      const legacy = legacyNumberedContent(content);
+      if (legacy) {
+        const introMarkup = legacy.intro ? `<p>${escapeHtml(legacy.intro)}</p>` : '';
+        return `${introMarkup}<ol class="research-points">${legacy.items.map(item => pointMarkup(item)).join('')}</ol>`;
+      }
+      const rawParagraphs = String(content || '').split(/\n{2,}/).map(part => part.trim()).filter(Boolean);
+      const paragraphs = rawParagraphs.flatMap(paragraph => {
+        if (paragraph.length < 120) return [paragraph];
+        const sentences = paragraph.match(/[^。！？]+[。！？]?/g)?.map(sentence => sentence.trim()).filter(Boolean) || [];
+        if (sentences.length < 3) return [paragraph];
+        const groups = [];
+        for (let index = 0; index < sentences.length; index += 2) groups.push(sentences.slice(index, index + 2).join(''));
+        return groups;
+      });
+      return paragraphs.map(paragraph => `<p>${escapeHtml(paragraph)}</p>`).join('');
+    }
+
+    function resetStreamingDraft() {
+      runtime.draftText = '';
+      ui.reportDraft.hidden = true;
+      ui.reportDraft.innerHTML = '';
+    }
+
+    function markdownDraftMarkup(text) {
+      const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+      const output = [];
+      let listOpen = false;
+      const closeList = () => {
+        if (listOpen) {
+          output.push('</ul>');
+          listOpen = false;
+        }
+      };
+      lines.forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          closeList();
+          return;
+        }
+        const heading = trimmed.match(/^#{1,4}\s+(.+)$/);
+        if (heading) {
+          closeList();
+          output.push(`<h3>${escapeHtml(heading[1])}</h3>`);
+          return;
+        }
+        const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+        if (bullet) {
+          if (!listOpen) {
+            output.push('<ul>');
+            listOpen = true;
+          }
+          output.push(`<li>${escapeHtml(bullet[1])}</li>`);
+          return;
+        }
+        closeList();
+        output.push(`<p>${escapeHtml(trimmed)}</p>`);
+      });
+      closeList();
+      return output.join('');
+    }
+
+    function appendReportDelta(delta) {
+      const text = String(delta || '');
+      if (!text) return;
+      runtime.draftText += text;
+      ui.reportDraft.hidden = false;
+      ui.reportBody.innerHTML = '';
+      ui.reportDraft.innerHTML = `${markdownDraftMarkup(runtime.draftText)}<span class="streaming-cursor" aria-hidden="true"></span>`;
+      requestAnimationFrame(() => {
+        const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+        ui.reportDraft.scrollIntoView({ behavior, block: 'end' });
+      });
+    }
+    
+    function renderReport(task) {
+      if (!task.result) return;
+      resetStreamingDraft();
+      const evidenceMap = new Map(task.evidence.map(item => [item.citation_number, item]));
+      ui.reportKicker.textContent = `${task.company}财报案卷`;
+      ui.reportProvider.textContent = task.result.synthetic ? '合成演示数据' : providerLabel(task.result.provider);
+      ui.reportTitle.textContent = task.result.title;
+      ui.reportDescription.textContent = task.result.synthetic ? '当前内容为合成演示数据，不代表真实研究结论。' : '公开财报、网页与外部事件共享同一套证据编号，点击数字可访问原始来源。';
+      const summaryCitations = task.evidence.slice(0, 2).map(item => citationMarkup(item.citation_number, evidenceMap)).join('');
+      ui.reportSummary.innerHTML = `<strong>核心结论：</strong>${escapeHtml(task.result.summary)} ${summaryCitations}`;
+      ui.reportBody.innerHTML = task.result.sections.map(section => {
+        const citations = section.citations.map(number => citationMarkup(number, evidenceMap)).join('');
+        return `<section class="section"><h3>${escapeHtml(section.title)}</h3><div class="section-actions"><button data-prompt="追问：${escapeHtml(section.title)}">追问</button><button data-prompt="重新研究：${escapeHtml(section.title)}">重新研究本节</button></div><div class="section-content">${formatResearchContent(section.content, section.points)}${citations ? `<div class="section-citations">${citations}</div>` : ''}</div></section>`;
+      }).join('');
+      bindPromptButtons(ui.reportBody);
+    }
+    
+    function renderEvidence(items) {
+      ui.evidenceCount.textContent = `${items.length} 条`;
+      ui.searchResultCount.textContent = String(items.length);
+      ui.searchResultsToggle.disabled = items.length === 0;
+      if (!items.length) setSearchResultsOpen(false);
+      if (!items.length) {
+        ui.sourceList.innerHTML = '<p class="empty-state">当前任务尚未形成搜索结果。</p>';
+        return;
+      }
+      ui.sourceList.innerHTML = items.map(item => {
+        const domain = sourceDomain(item.url);
+        const site = item.publisher && item.publisher !== domain ? item.publisher : domain;
+        const title = displaySourceTitle(item, site);
+        const domainMarkup = site === domain ? '' : `<span class="source-domain">${escapeHtml(domain)}</span>`;
+        return `<a class="source" href="${escapeHtml(safeUrl(item.url))}" target="_blank" rel="noreferrer" aria-label="打开搜索结果：${escapeHtml(title)}"><div class="source-meta"><span class="source-num">${item.citation_number}</span><span class="source-site">${escapeHtml(site)}</span>${domainMarkup}</div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(item.excerpt || '点击查看网页原文与完整上下文。')}</p></a>`;
+      }).join('');
+    }
+    
+    function applyTask(task) {
+      const switchedTask = runtime.taskId !== task.id;
+      runtime.taskId = task.id;
+      runtime.taskStatus = task.status;
+      runtime.company = task.company;
+      runtime.symbol = task.symbol || '';
+      runtime.market = task.market;
+      runtime.question = task.question;
+      runtime.depth = task.depth;
+      runtime.evidence = task.evidence || [];
+      if (switchedTask) runtime.startedAt = Date.parse(task.created_at || '') || Date.now();
+      if (switchedTask) resetStreamingDraft();
+      runtime.finishedAt = TERMINAL.has(task.status) ? (Date.parse(task.updated_at || '') || Date.now()) : null;
+      localStorage.setItem('finscope.activeTaskId', task.id);
+      ui.companyName.textContent = task.company;
+      ui.companyTicker.textContent = [task.symbol, task.market].filter(Boolean).join(' · ');
+      ui.researchTurn.hidden = false;
+      document.getElementById('research-question').textContent = task.question;
+      const depthLabel = { quick: '快速', standard: '标准', deep: '深入' }[task.depth] || task.depth;
+      ui.meta.textContent = `财报分析 Agent · ${depthLabel}深度 · ${task.progress}%`;
+      setComposerAction(task.status);
+      const labels = {
+        queued: '研究任务已创建', running: `研究进行中 · ${task.progress}%`, paused: '研究已暂停 · 当前结果已保留',
+        completed: '研究完成', failed: task.error || '研究失败', cancelled: '研究已停止 · 当前结果已保留',
+      };
+      setStatus(labels[task.status] || task.status, task.status);
+      const traceLabels = { queued: '准备中', running: `执行中 ${task.progress}%`, paused: '已暂停', completed: '已完成', failed: '执行失败', cancelled: '已停止' };
+      setTraceState(traceLabels[task.status] || task.status, task.status);
+      renderEvidence(task.evidence || []);
+      renderReport(task);
+    }
+
+    async function loadCases() {
+      try {
+        const cases = await api('/cases');
+        if (!cases.length) {
+          ui.caseList.innerHTML = '<p class="empty-state">还没有案卷。创建第一个公司研究。</p>';
+          return;
+        }
+        ui.caseList.innerHTML = cases.slice(0, 8).map(item => `<button class="case${item.latest_task_id === runtime.taskId ? ' selected' : ''}" data-task-id="${escapeHtml(item.latest_task_id)}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.latest_status)} · ${escapeHtml(item.market)}</span></button>`).join('');
+        ui.caseList.querySelectorAll('[data-task-id]').forEach(button => button.addEventListener('click', async () => {
+          const taskId = button.dataset.taskId;
+          try {
+            const task = await api(`/research/${taskId}`);
+            runtime.eventIds.clear();
+            ui.traceList.innerHTML = '<p class="trace-empty">正在读取 Agent 工作轨迹…</p>';
+            applyTask(task);
+            openStream(task.id);
+            await loadCases();
+          } catch (error) {
+            setStatus(`案卷读取失败：${error.message}`, 'failed');
+          }
+        }));
+      } catch (error) {
+        ui.caseList.innerHTML = `<p class="empty-state">案卷列表读取失败：${escapeHtml(error.message)}</p>`;
+      }
+    }
+    
+    function closeStream() {
+      runtime.stream?.close();
+      runtime.stream = null;
+    }
+    
+    function openStream(taskId) {
+      closeStream();
+      const stream = new EventSource(`${API_BASE}/research/${taskId}/events`);
+      runtime.stream = stream;
+      stream.addEventListener('progress', async message => {
+        const event = JSON.parse(message.data);
+        runtime.taskStatus = event.status;
+        if (event.kind === 'task.report_delta') appendReportDelta(event.payload?.delta || '');
+        else appendLog(event);
+        setTraceState(event.status === 'running' ? `执行中 ${event.progress}%` : event.message, event.status);
+        ui.meta.textContent = `财报分析 Agent · 标准深度 · ${event.progress}%`;
+        setComposerAction(event.status);
+        if (event.step === 'reading' && event.status === 'running') {
+          const quickTask = await api(`/research/${taskId}`);
+          applyTask(quickTask);
+        }
+        if (TERMINAL.has(event.status)) {
+          closeStream();
+          setStatus(event.status === 'completed' ? '正在整理报告与证据' : event.message, event.status === 'completed' ? 'running' : event.status);
+          const task = await api(`/research/${taskId}`);
+          applyTask(task);
+        } else {
+          setStatus(event.message, event.status);
+        }
+      });
+      stream.onerror = () => {
+        if (runtime.stream === stream) setStatus('进度连接中断，正在等待恢复', 'offline');
+      };
+    }
+    
+    async function startResearch(input) {
+      if (!input?.question?.trim()) return false;
+      closeStream();
+      runtime.eventIds.clear();
+      resetStreamingDraft();
+      ui.traceList.innerHTML = '<p class="trace-empty">正在创建研究任务并准备执行计划…</p>';
+      runtime.startedAt = Date.now();
+      runtime.finishedAt = null;
+      ui.researchTurn.hidden = false;
+      document.getElementById('research-question').textContent = input.question.trim();
+      ui.meta.textContent = '财报分析 Agent · 正在启动';
+      setTraceExpanded(true);
+      setTraceState('正在创建');
+      ui.newCase.disabled = true;
+      setStatus('正在识别公司并创建财报研究任务');
+      try {
+        const task = await api('/research', {
+          method: 'POST',
+          body: JSON.stringify({
+            company: input.company, symbol: input.symbol || null, market: input.market, agent: 'financial', depth: input.depth,
+            question: input.question,
+          }),
+        });
+        applyTask(task);
+        if (input.feedbackMessage) {
+          appendLog({ id: `feedback-${task.id}`, message: `已采纳反馈并启动新一轮研究：${input.feedbackMessage}`, created_at: new Date().toISOString() });
+        }
+        openStream(task.id);
+        await loadCases();
+        return true;
+      } catch (error) {
+        setStatus(error.message, 'failed');
+        setTraceState('创建失败', 'failed');
+        return false;
+      } finally {
+        ui.newCase.disabled = false;
+      }
+    }
+    
+    async function restoreOrStart() {
+      try {
+        const health = await api('/health');
+        runtime.provider = health.provider || health.mode;
+        const saved = localStorage.getItem('finscope.activeTaskId');
+        if (saved) {
+          try {
+            const task = await api(`/research/${saved}`);
+            if (health.mode !== 'mock' && task.result?.synthetic) {
+              showReadyState('已忽略旧的合成演示案卷 · 可以开始真实研究');
+              await loadCases();
+              return;
+            }
+            runtime.eventIds.clear();
+            ui.traceList.innerHTML = '<p class="trace-empty">正在读取 Agent 工作轨迹…</p>';
+            applyTask(task);
+            openStream(task.id);
+            await loadCases();
+            return;
+          } catch {
+            localStorage.removeItem('finscope.activeTaskId');
+          }
+        }
+        showReadyState();
+        await loadCases();
+      } catch {
+        setStatus('后端未启动 · 当前为静态界面', 'offline');
+        ui.meta.textContent = '财报分析 Agent · 后端未连接';
+        ui.send.disabled = true;
+      }
+    }
+    
+    async function stopResearch() {
+      if (!runtime.taskId) return;
+      ui.send.disabled = true;
+      try {
+        const task = await api(`/research/${runtime.taskId}/cancel`, { method: 'POST' });
+        closeStream();
+        applyTask(task);
+      } catch (error) {
+        setStatus(error.message, 'failed');
+      } finally {
+        ui.send.disabled = false;
+        setComposerAction(runtime.taskStatus);
+      }
+    }
+
+    async function handleComposerAction() {
+      if (runtime.taskId && !TERMINAL.has(runtime.taskStatus)) {
+        await stopResearch();
+        return;
+      }
+      await submitFeedback();
+    }
+    
+    async function submitFeedback() {
+      const message = ui.input.value.trim();
+      if (!message) return;
+      ui.send.disabled = true;
+      try {
+        if (!runtime.taskId) {
+          const started = await startResearch({
+            company: '自动识别中',
+            symbol: '',
+            market: 'AUTO',
+            depth: 'standard',
+            question: message,
+          });
+          if (started) ui.input.value = '';
+          return;
+        }
+        const continuation = {
+          company: runtime.company,
+          symbol: runtime.symbol,
+          market: runtime.market,
+          depth: runtime.depth,
+          question: `${runtime.question}\n\n继续研究：${message}`,
+          feedbackMessage: message,
+        };
+        await api(`/research/${runtime.taskId}/feedback`, { method: 'POST', body: JSON.stringify({ message }) });
+        if (!TERMINAL.has(runtime.taskStatus)) {
+          setStatus('正在停止当前轮并应用反馈');
+          setTraceState('正在应用反馈');
+          try {
+            await api(`/research/${runtime.taskId}/cancel`, { method: 'POST' });
+          } catch (cancelError) {
+            if (!String(cancelError.message).includes('已经结束')) throw cancelError;
+          }
+        }
+        const started = await startResearch(continuation);
+        if (started) ui.input.value = '';
+      } catch (error) {
+        setStatus(error.message, 'failed');
+        setTraceState('反馈应用失败', 'failed');
+      } finally {
+        ui.send.disabled = false;
+        setComposerAction(runtime.taskStatus);
+      }
+    }
+    
+    function bindPromptButtons(root = document) {
+      root.querySelectorAll('[data-prompt]').forEach(button => button.addEventListener('click', () => {
+        ui.input.value = button.dataset.prompt;
+        ui.input.focus();
+      }));
+    }
+    
+    document.querySelectorAll('.rail').forEach(panel => panel.addEventListener('wheel', event => {
+      if (window.innerWidth > 760 && event.deltaY !== 0) {
+        ui.scrollArea.scrollBy({ top: event.deltaY, left: 0, behavior: 'auto' });
+        event.preventDefault();
+      }
+    }, { passive: false }));
+    
+    ui.searchResultsToggle.addEventListener('click', async () => {
+      if (ui.searchResultsToggle.getAttribute('aria-expanded') === 'true') {
+        setSearchResultsOpen(false);
+        return;
+      }
+      setSearchResultsOpen(true);
+      const needsTitles = runtime.evidence.some(item => isUrlTitle(item.title, item.url));
+      if (!runtime.taskId || !needsTitles || runtime.enrichedEvidenceTasks.has(runtime.taskId)) return;
+      runtime.enrichedEvidenceTasks.add(runtime.taskId);
+      ui.evidenceCount.textContent = '正在读取网页标题…';
+      try {
+        const task = await api(`/research/${runtime.taskId}/evidence/enrich`, { method: 'POST' });
+        runtime.evidence = task.evidence || [];
+        renderEvidence(runtime.evidence);
+      } catch {
+        ui.evidenceCount.textContent = `${runtime.evidence.length} 条`;
+      }
+    });
+    ui.searchResultsClose.addEventListener('click', () => {
+      setSearchResultsOpen(false);
+      ui.searchResultsToggle.focus();
+    });
+
+    ui.traceToggle.addEventListener('click', () => {
+      setTraceExpanded(ui.traceToggle.getAttribute('aria-expanded') !== 'true');
+    });
+    ui.agentPickerToggle.addEventListener('click', () => {
+      setAgentPickerExpanded(ui.agentPickerToggle.getAttribute('aria-expanded') !== 'true');
+    });
+    ui.agentPickerMenu.querySelector('[data-agent="financial"]').addEventListener('click', () => {
+      setAgentPickerExpanded(false);
+      ui.input.focus();
+    });
+    document.addEventListener('click', event => {
+      if (!event.target.closest('.agent-picker')) setAgentPickerExpanded(false);
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && ui.searchResultsDrawer.classList.contains('open')) {
+        setSearchResultsOpen(false);
+        ui.searchResultsToggle.focus();
+        return;
+      }
+      if (event.key === 'Escape' && ui.agentPickerToggle.getAttribute('aria-expanded') === 'true') {
+        setAgentPickerExpanded(false);
+        ui.agentPickerToggle.focus();
+      }
+    });
+    ui.newCase.addEventListener('click', () => {
+      showReadyState();
+      ui.input.value = '';
+      ui.input.focus();
+    });
+    ui.send.addEventListener('click', handleComposerAction);
+    ui.input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleComposerAction(); } });
+    bindPromptButtons();
+    restoreOrStart();
+    
+  </script>
+</body>
+</html>

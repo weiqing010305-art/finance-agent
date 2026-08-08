@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FinScope · 案卷控制台样式原型</title>
+  <!--
+    PROTOTYPE — 案卷控制台单方案，不修改现有 unified-agents.html。
+    THESIS: 把公司研究呈现为可介入、可核查的案卷工作，而不是聊天窗口或指标仪表盘。
+    OWN-WORLD: 冷白案卷纸、墨色文字、松绿操作色、琥珀色待确认；细分隔线组织高密度信息。
+    STORY: 用户选择 Agent，观察研究进度，在关键节点暂停或纠偏，并逐条核查结论来源。
+    FIRST VIEWPORT: 左侧案卷导航，中间任务控制与报告，右侧证据/记录/待确认，底部固定追问。
+    FORM: 固定三栏案卷控制台；唯一纵向滚动区域是中间报告。
+  -->
+  <style>
+    :root{
+      --paper:#f2f5f2;
+      --sheet:#fbfcfb;
+      --white:#ffffff;
+      --ink:#17201d;
+      --text:#34403b;
+      --muted:#68746f;
+      --subtle:#87918d;
+      --line:#d9dfdb;
+      --line-strong:#c7d0cb;
+      --pine:#145a46;
+      --pine-dark:#0f4939;
+      --pine-soft:#dfede7;
+      --amber:#9a5c12;
+      --amber-soft:#f5ead8;
+      --red:#a13a36;
+      --red-soft:#f6e6e4;
+      --shadow:0 14px 34px rgba(23,32,29,.09);
+      --font:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;overflow:hidden;background:var(--paper);color:var(--ink);font-family:var(--font)}
+    button,input,textarea{font:inherit}
+    button,a{touch-action:manipulation}
+    button{cursor:pointer}
+    button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid rgba(20,90,70,.28);outline-offset:3px}
+    .app{height:100vh;min-height:0;display:grid;grid-template-columns:232px minmax(620px,1fr) 340px;background:var(--sheet)}
+
+    .rail{height:100vh;overflow:hidden;padding:22px 16px 18px;background:#e9eeea;border-right:1px solid var(--line-strong);display:flex;flex-direction:column}
+    .brand{display:flex;align-items:center;gap:11px;padding:0 6px 22px}
+    .brand-mark{display:grid;place-items:center;width:30px;height:30px;border-radius:8px 8px 8px 2px;background:var(--pine);color:#fff;font-size:12px;font-weight:800;box-shadow:0 6px 14px rgba(20,90,70,.2)}
+    .brand-copy strong{display:block;font-size:15px;letter-spacing:-.02em}
+    .brand-copy span{display:block;margin-top:2px;color:var(--muted);font-size:12px}
+    .new-case{width:100%;min-height:44px;border:0;border-radius:10px;background:var(--pine);color:#fff;font-weight:700;box-shadow:0 8px 18px rgba(20,90,70,.16)}
+    .rail-label{margin:24px 8px 9px;color:var(--muted);font-size:12px;font-weight:600}
+    .agent-list,.case-list{display:grid;gap:5px}
+    .agent{position:relative;width:100%;min-height:60px;border:1px solid transparent;border-radius:10px;background:transparent;padding:10px 10px 9px 35px;text-align:left;color:var(--text)}
+    .agent:hover{background:rgba(255,255,255,.62)}
+    .agent.active{background:var(--white);border-color:var(--line);box-shadow:0 4px 12px rgba(23,32,29,.05)}
+    .agent-dot{position:absolute;left:12px;top:17px;width:9px;height:9px;border-radius:50%;background:#aeb7b2}
+    .agent.active .agent-dot{background:var(--pine);box-shadow:0 0 0 4px var(--pine-soft)}
+    .agent strong{display:block;font-size:14px;line-height:1.3}
+    .agent small{display:block;margin-top:5px;color:var(--muted);font-size:12px;line-height:1.35}
+    .agent-tag{position:absolute;right:9px;top:10px;color:var(--pine);font-size:11px;font-weight:700}
+    .case{width:100%;border:0;border-radius:9px;background:transparent;padding:10px;text-align:left;color:var(--text)}
+    .case:hover{background:rgba(255,255,255,.58)}
+    .case.selected{background:rgba(255,255,255,.82)}
+    .case strong{display:block;font-size:13px;line-height:1.4}
+    .case span{display:block;margin-top:4px;color:var(--muted);font-size:12px}
+    .rail-note{margin-top:auto;padding:11px 9px 0;border-top:1px solid rgba(104,116,111,.18);color:var(--muted);font-size:11px;line-height:1.55}
+
+    .workspace{height:100vh;min-width:0;min-height:0;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;border-right:1px solid var(--line-strong);background:var(--sheet)}
+    .taskbar{padding:16px 28px 14px;background:rgba(251,252,251,.97);border-bottom:1px solid var(--line)}
+    .task-meta{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:12px}
+    .company{display:flex;align-items:center;gap:9px;min-width:0}
+    .company strong{font-size:14px}
+    .ticker{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+    .live-status{display:flex;align-items:center;gap:7px;color:var(--pine);font-size:12px;font-weight:700}
+    .live-dot{width:8px;height:8px;border-radius:50%;background:var(--pine);box-shadow:0 0 0 4px var(--pine-soft);animation:pulse 1.8s ease-out infinite}
+    @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(20,90,70,.32)}70%,100%{box-shadow:0 0 0 7px rgba(20,90,70,0)}}
+    .task-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center}
+    .task-copy{min-width:0}
+    .task-copy h2{margin:0;font-size:16px;line-height:1.45;letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .task-copy p{margin:5px 0 0;color:var(--muted);font-size:12px}
+    .task-actions{display:flex;gap:7px}
+    .task-actions button{min-height:36px;border:1px solid var(--line-strong);border-radius:8px;background:var(--white);padding:0 11px;color:var(--text);font-size:12px;font-weight:650}
+    .task-actions button:hover{border-color:#9eb2a8;background:#f7faf8}
+    .task-actions .danger{color:var(--red)}
+
+    .progress{padding:12px 28px;background:var(--paper);border-bottom:1px solid var(--line)}
+    .progress-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+    .progress-head strong{font-size:12px}
+    .progress-head button{border:0;background:transparent;color:var(--pine);font-size:12px;font-weight:650}
+    .steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0}
+    .step{position:relative;padding:0 12px 0 19px;color:var(--muted);font-size:12px;line-height:1.4}
+    .step:not(:last-child)::after{content:"";position:absolute;left:calc(100% - 7px);top:7px;width:14px;height:1px;background:var(--line-strong)}
+    .step-dot{position:absolute;left:0;top:4px;width:10px;height:10px;border-radius:50%;background:#b9c1bd}
+    .step.done{color:var(--pine)}
+    .step.done .step-dot{background:var(--pine)}
+    .step.active{color:var(--ink);font-weight:700}
+    .step.active .step-dot{background:var(--sheet);border:3px solid var(--pine)}
+    .step small{display:block;margin-top:2px;color:var(--subtle);font-size:11px;font-weight:400}
+
+    .document-scroll{min-height:0;overflow-y:auto;overscroll-behavior-y:contain;scrollbar-gutter:stable;background:var(--sheet)}
+    .case-head{padding:30px 52px 24px;border-bottom:1px solid var(--line)}
+    .kicker{display:flex;align-items:center;gap:8px;margin-bottom:13px;color:var(--muted);font-size:12px}
+    .kicker b{padding:4px 8px;border-radius:999px;background:var(--pine-soft);color:var(--pine);font-size:11px}
+    .case-head h1{max-width:none;margin:0 0 12px;font-size:32px;line-height:1.16;letter-spacing:-.035em;text-wrap:balance}
+    .case-head p{max-width:62ch;margin:0;color:var(--muted);font-size:14px;line-height:1.7}
+    .report-tabs{display:flex;gap:24px;padding:0 52px;border-bottom:1px solid var(--line)}
+    .report-tabs button{min-height:44px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);font-size:13px}
+    .report-tabs button.active{border-bottom-color:var(--pine);color:var(--pine);font-weight:750}
+    .report{padding:34px 52px 60px}
+    .summary{margin:0 0 30px;padding:18px 20px;background:#edf4f0;border-top:1px solid #afc9bd;border-bottom:1px solid #afc9bd}
+    .summary p{margin:0;color:#1b3c31;font-size:15px;line-height:1.75}
+    .section{position:relative;padding:0 0 8px}
+    .section h3{margin:30px 0 10px;font-size:19px;line-height:1.35;letter-spacing:-.015em}
+    .section p{max-width:68ch;margin:0 0 14px;color:var(--text);font-size:15px;line-height:1.82}
+    .section-actions{position:absolute;right:0;top:24px;display:flex;gap:5px;opacity:0;transform:translateY(3px);transition:opacity .18s ease,transform .18s ease}
+    .section:hover .section-actions,.section:focus-within .section-actions{opacity:1;transform:none}
+    .section-actions button{min-height:32px;border:1px solid var(--line);border-radius:7px;background:var(--white);padding:0 9px;color:var(--muted);font-size:11px}
+    .section-actions button:hover{border-color:#9fb3aa;color:var(--pine)}
+    .cite{position:relative;display:inline-grid;place-items:center;width:22px;height:22px;margin:0 3px;border:1px solid #91ad9f;border-radius:50%;background:#edf4f0;color:var(--pine);font-size:11px;font-weight:800;text-decoration:none;vertical-align:2px}
+    .cite-card{pointer-events:none;position:absolute;z-index:30;left:50%;bottom:calc(100% + 10px);width:300px;padding:13px 14px;border:1px solid var(--line-strong);border-radius:10px;background:var(--white);color:var(--text);box-shadow:var(--shadow);text-align:left;opacity:0;transform:translate(-50%,5px);transition:opacity .16s ease,transform .16s ease}
+    .cite:hover .cite-card,.cite:focus .cite-card{opacity:1;transform:translate(-50%,0)}
+    .cite-card strong{display:block;margin-bottom:4px;color:var(--ink);font-size:13px;line-height:1.4}
+    .cite-card span{display:block;color:var(--muted);font-size:12px;font-weight:400;line-height:1.5}
+    .metrics{display:grid;grid-template-columns:repeat(3,1fr);margin:24px 0 30px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+    .metric{padding:16px 14px;border-right:1px solid var(--line)}
+    .metric:last-child{border-right:0}
+    .metric span{display:block;color:var(--muted);font-size:12px}
+    .metric strong{display:block;margin-top:7px;font-size:18px;font-variant-numeric:tabular-nums}
+    .metric em{display:block;margin-top:4px;color:var(--pine);font-size:11px;font-style:normal}
+    .risk{margin-top:28px;padding:15px 0;border-top:1px solid #d9b779;border-bottom:1px solid #d9b779;color:#6f4b1c!important}
+
+    .composer{padding:12px 28px 15px;border-top:1px solid var(--line);background:rgba(242,245,242,.98);box-shadow:0 -12px 30px rgba(23,32,29,.05)}
+    .context-row,.suggestions{display:flex;align-items:center;gap:7px;overflow-x:auto;scrollbar-width:none}
+    .context-row{margin-bottom:8px}
+    .context-row span{flex:0 0 auto;color:var(--muted);font-size:11px}
+    .context-chip{padding:4px 7px;border-radius:999px;background:var(--pine-soft);color:var(--pine)!important;font-weight:650}
+    .suggestions{margin-bottom:8px}
+    .suggestions button{flex:0 0 auto;min-height:30px;border:1px solid var(--line);border-radius:999px;background:var(--white);padding:0 10px;color:var(--text);font-size:11px}
+    .suggestions button:hover{border-color:#9eb2a8;color:var(--pine)}
+    .composer-box{border:1px solid var(--line-strong);border-radius:12px;background:var(--white);padding:10px 12px 9px;box-shadow:0 6px 18px rgba(23,32,29,.05)}
+    .composer-box textarea{display:block;width:100%;min-height:48px;max-height:120px;resize:none;border:0;outline:0;background:transparent;color:var(--ink);font-size:14px;line-height:1.6}
+    .composer-box textarea::placeholder{color:#78837e}
+    .composer-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:8px;border-top:1px solid #edf0ee}
+    .composer-foot span{color:var(--muted);font-size:11px}
+    .send{min-width:82px;min-height:36px;border:0;border-radius:8px;background:var(--pine);color:#fff;font-size:13px;font-weight:750;box-shadow:0 6px 14px rgba(20,90,70,.18)}
+    .send:hover{background:var(--pine-dark)}
+
+    .evidence{height:100vh;overflow:hidden;padding:20px 18px 18px;background:#f4f7f4;display:flex;flex-direction:column}
+    .e-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:0 2px 14px}
+    .e-head h2{margin:0;font-size:16px}
+    .e-head span{color:var(--muted);font-size:11px}
+    .e-tabs{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--line)}
+    .e-tabs button{position:relative;min-height:42px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);font-size:12px}
+    .e-tabs button.active{border-bottom-color:var(--pine);color:var(--pine);font-weight:750}
+    .badge{display:inline-grid;place-items:center;min-width:17px;height:17px;margin-left:4px;border-radius:999px;background:var(--amber-soft);color:var(--amber);font-size:10px;font-weight:800}
+    .e-panel{display:none;min-height:0;overflow:auto;padding-top:13px}
+    .e-panel.active{display:block}
+    .e-filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+    .e-filters button{min-height:30px;border:1px solid var(--line);border-radius:999px;background:transparent;padding:0 9px;color:var(--muted);font-size:11px}
+    .e-filters button.active{border-color:var(--pine);background:var(--pine);color:#fff}
+    .source{position:relative;padding:15px 2px 15px 36px;border-top:1px solid var(--line)}
+    .source-num{position:absolute;left:2px;top:16px;display:grid;place-items:center;width:24px;height:24px;border:1px solid #9eb6aa;border-radius:50%;color:var(--pine);font-size:11px;font-weight:800}
+    .source h3{margin:0 0 7px;font-size:13px;line-height:1.45}
+    .source-meta{display:flex;gap:6px;flex-wrap:wrap;color:var(--muted);font-size:11px;line-height:1.5}
+    .source-meta b{color:var(--pine);font-weight:700}
+    .source p{margin:8px 0 0;color:var(--text);font-size:12px;line-height:1.55}
+    .log{display:grid;grid-template-columns:44px 1fr;gap:10px;padding:12px 2px;border-bottom:1px solid var(--line)}
+    .log time{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+    .log p{margin:0;color:var(--text);font-size:12px;line-height:1.55}
+    .confirm{padding:14px;border:1px solid #dfc28f;border-radius:10px;background:#fbf5eb}
+    .confirm strong{display:block;color:var(--amber);font-size:13px}
+    .confirm p{margin:8px 0 12px;color:#69491d;font-size:12px;line-height:1.6}
+    .confirm-actions{display:grid;gap:6px}
+    .confirm-actions button{min-height:36px;border:1px solid #dfc28f;border-radius:8px;background:#fffaf3;color:#69491d;font-size:12px;text-align:left;padding:0 10px}
+    .prototype-label{position:fixed;z-index:50;left:12px;bottom:12px;padding:6px 9px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.94);color:var(--muted);font-size:10px;box-shadow:0 4px 12px rgba(23,32,29,.06)}
+
+    @media(max-width:1020px){
+      .app{grid-template-columns:210px minmax(560px,1fr)}
+      .evidence{display:none}
+    }
+    @media(max-width:760px){
+      html,body{height:auto;overflow:auto}
+      body{padding-bottom:180px}
+      .app{display:block;height:auto}
+      .rail,.workspace,.evidence{height:auto;overflow:visible}
+      .rail{padding:12px;border-right:0;border-bottom:1px solid var(--line)}
+      .brand{padding-bottom:10px}
+      .new-case,.rail-label,.case-list,.rail-note{display:none}
+      .agent-list{display:flex;overflow:auto}
+      .agent{min-width:180px}
+      .workspace{display:block;border-right:0}
+      .taskbar{padding:13px 15px}
+      .task-meta{align-items:flex-start}
+      .task-row{display:block}
+      .task-actions{margin-top:12px;overflow:auto}
+      .progress{padding:11px 15px}
+      .steps{display:flex;overflow:auto;gap:14px}
+      .step{min-width:145px}
+      .step:not(:last-child)::after{display:none}
+      .document-scroll{overflow:visible}
+      .case-head,.report{padding-left:20px;padding-right:20px}
+      .case-head h1{font-size:28px}
+      .report-tabs{padding:0 20px;overflow:auto}
+      .section-actions{position:static;margin:0 0 9px;opacity:1;transform:none}
+      .metrics{grid-template-columns:1fr}
+      .metric{border-right:0;border-bottom:1px solid var(--line)}
+      .metric:last-child{border-bottom:0}
+      .composer{position:fixed;z-index:40;left:0;right:0;bottom:0;padding:8px 10px 10px}
+      .context-row{display:none}
+      .composer-box textarea{min-height:40px}
+      .composer-foot span{display:none}
+      .evidence{display:block;padding:20px}
+      .prototype-label{display:none}
+    }
+    @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail" aria-label="Agent 与案卷导航">
+      <div class="brand"><span class="brand-mark">FS</span><div class="brand-copy"><strong>FinScope</strong><span>公司研究工作台</span></div></div>
+      <button class="new-case">＋ 新建公司案卷</button>
+      <div class="rail-label">选择 Agent</div>
+      <nav class="agent-list" aria-label="Agent 选择">
+        <button class="agent"><span class="agent-dot"></span><span class="agent-tag">MVP</span><strong>财报分析 Agent</strong><small>财报、公告与经营质量</small></button>
+        <button class="agent"><span class="agent-dot"></span><span class="agent-tag">开发中</span><strong>市场分析 Agent</strong><small>行情、指标与风险数据</small></button>
+        <button class="agent active"><span class="agent-dot"></span><span class="agent-tag">当前</span><strong>公司研究 Agent</strong><small>编排专业 Agent 生成案卷</small></button>
+      </nav>
+      <div class="rail-label">公司案卷</div>
+      <div class="case-list">
+        <button class="case selected"><strong>腾讯公司研究</strong><span>研究中 · 6 条采用证据</span></button>
+        <button class="case"><strong>贵州茅台经营质量</strong><span>已完成 · 7 条证据</span></button>
+        <button class="case"><strong>宁德时代海外风险</strong><span>部分完成 · 待确认</span></button>
+      </div>
+      <div class="rail-note">独立样式原型<br>所有数据与结论均为合成演示</div>
+    </aside>
+
+    <main class="workspace">
+      <header class="taskbar">
+        <div class="task-meta">
+          <div class="company"><strong>腾讯控股</strong><span class="ticker">0700.HK · 数据截止 2026-07-31</span></div>
+          <div class="live-status" id="live-status" aria-live="polite"><span class="live-dot"></span><span>正在补查外部事件</span></div>
+        </div>
+        <div class="task-row">
+          <div class="task-copy"><h2>腾讯近三年利润增长由哪些业务驱动？这种增长是否可持续？</h2><p>公司研究 Agent · 标准深度 · 已运行 03:24</p></div>
+          <div class="task-actions"><button id="scope">调整范围</button><button id="pause">暂停</button><button class="danger" id="stop">停止</button></div>
+        </div>
+      </header>
+
+      <section class="progress" aria-label="研究计划">
+        <div class="progress-head"><strong>研究计划 · 3/4</strong><button id="plan-toggle">收起计划</button></div>
+        <div class="steps" id="steps">
+          <div class="step done"><span class="step-dot"></span>财报分析<small>11 份资料</small></div>
+          <div class="step done"><span class="step-dot"></span>市场验证<small>延迟行情</small></div>
+          <div class="step active"><span class="step-dot"></span>外部事件补查<small>发现 1 处冲突</small></div>
+          <div class="step"><span class="step-dot"></span>交叉汇总<small>等待执行</small></div>
+        </div>
+      </section>
+
+      <div class="document-scroll" id="document-scroll">
+        <header class="case-head">
+          <div class="kicker"><b>腾讯公司案卷</b><span>公司研究 Agent · 综合报告</span><span>·</span><span>合成演示内容</span></div>
+          <h1>利润重新加速，但质量比速度更值得关注</h1>
+          <p>财报、行情和外部事件共享同一套证据编号。用户可以在研究过程中暂停、纠正或要求其他 Agent 重新验证。</p>
+        </header>
+        <nav class="report-tabs" aria-label="案卷内容切换"><button class="active">研究报告</button><button>关键数据</button><button>案卷资料</button></nav>
+        <article class="report">
+          <div class="summary"><p><strong>综合判断：</strong>基本面改善与市场表现目前方向一致，但利润率扩张速度可能回归常态。游戏恢复、广告效率和费用纪律共同推动利润增长。<a class="cite" href="https://www.hkexnews.hk/" target="_blank" rel="noreferrer">1<span class="cite-card"><strong>腾讯控股年度业绩公告</strong><span>香港交易所 · 一手来源<br>点击数字直接访问原始来源</span></span></a><a class="cite" href="https://quote.eastmoney.com/" target="_blank" rel="noreferrer">5<span class="cite-card"><strong>港股行情数据快照</strong><span>东方财富 · 延迟行情<br>由市场分析 Agent 使用</span></span></a></p></div>
+
+          <section class="section">
+            <h3>财务与业务</h3>
+            <div class="section-actions"><button data-prompt="追问财务与业务结论">追问</button><button data-prompt="纠正财务与业务结论">纠正</button><button data-prompt="重新研究财务与业务部分">重新研究本节</button></div>
+            <p>游戏业务恢复提供规模贡献，营销服务和广告效率改善提供更高弹性；费用纪律令利润增速高于收入。当前证据更支持“多因素共同驱动”，而非单一业务反转。<a class="cite" href="https://www.tencent.com/" target="_blank" rel="noreferrer">2<span class="cite-card"><strong>投资者演示材料</strong><span>腾讯投资者关系 · 一手来源<br>业务分部与费用变化说明</span></span></a></p>
+          </section>
+
+          <div class="metrics">
+            <div class="metric"><span>收入趋势</span><strong>稳步恢复</strong><em>近三年</em></div>
+            <div class="metric"><span>利润趋势</span><strong>加速改善</strong><em>高于收入增速</em></div>
+            <div class="metric"><span>自由现金流</span><strong>保持正向</strong><em>仍需年度核验</em></div>
+          </div>
+
+          <section class="section">
+            <h3>市场表现</h3>
+            <div class="section-actions"><button data-prompt="追问市场表现">追问</button><button data-prompt="让市场分析 Agent 重新验证">Agent 验证</button></div>
+            <p>价格维持中期上升结构，但波动水平仍高。市场数据可以用于描述风险和交易状态，不能替代对经营质量的判断，也不能直接推导未来回报。<a class="cite" href="https://quote.eastmoney.com/" target="_blank" rel="noreferrer">5<span class="cite-card"><strong>收益、波动率与技术指标</strong><span>Python 确定性计算 · 可复算<br>数据源为延迟日线行情</span></span></a></p>
+          </section>
+
+          <section class="section">
+            <h3>风险与未知</h3>
+            <div class="section-actions"><button data-prompt="补查风险的反面证据">补查反面证据</button><button data-prompt="调整风险研究范围">调整范围</button></div>
+            <p class="risk">AI 投入、游戏监管与广告需求仍是主要变量。公司披露强调 AI 投入效率，部分外部材料则认为资本开支可能继续上升；当前证据不足以消除这一差异，因此案卷保留两种观点。</p>
+          </section>
+        </article>
+      </div>
+
+      <section class="composer" aria-label="继续追问">
+        <div class="context-row"><span>当前使用</span><span class="context-chip">公司研究 Agent ×</span><span>上下文</span><span class="context-chip">腾讯控股 ×</span><span class="context-chip">近三年 ×</span></div>
+        <div class="suggestions"><button data-prompt="补查支持相反观点的证据">补查反面证据</button><button data-prompt="对比近三年自由现金流">对比现金流</button><button data-prompt="让市场分析 Agent 验证这项结论">市场 Agent 验证</button></div>
+        <div class="composer-box">
+          <textarea id="composer-input" rows="2" aria-label="继续追问内容" placeholder="基于当前案卷追问，研究进行中也可以发送反馈…"></textarea>
+          <div class="composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><button class="send" id="send">发送反馈</button></div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="evidence" aria-label="研究上下文">
+      <div class="e-head"><h2>研究上下文</h2><span>采用 6 / 阅读 11</span></div>
+      <div class="e-tabs" role="tablist"><button class="active" data-panel="sources" role="tab">证据</button><button data-panel="logs" role="tab">执行记录</button><button data-panel="confirm" role="tab">待确认<span class="badge">1</span></button></div>
+
+      <div class="e-panel active" id="sources">
+        <div class="e-filters"><button class="active">全部 6</button><button>财报 3</button><button>市场 2</button><button>补查 1</button></div>
+        <div class="source"><span class="source-num">1</span><h3>腾讯控股年度业绩公告</h3><div class="source-meta"><span>香港交易所</span><b>财报分析 Agent</b><span>一手来源</span></div><p>利润改善与主要业务分部表现的核心披露。</p></div>
+        <div class="source"><span class="source-num">2</span><h3>投资者演示材料</h3><div class="source-meta"><span>腾讯投资者关系</span><b>财报分析 Agent</b><span>一手来源</span></div><p>业务分部、毛利和费用结构变化说明。</p></div>
+        <div class="source"><span class="source-num">3</span><h3>业务回顾与分部资料</h3><div class="source-meta"><span>公司披露</span><b>财报分析 Agent</b><span>一手来源</span></div></div>
+        <div class="source"><span class="source-num">4</span><h3>港股历史日线行情</h3><div class="source-meta"><span>东方财富</span><b>市场分析 Agent</b><span>延迟数据</span></div></div>
+        <div class="source"><span class="source-num">5</span><h3>收益、波动率与技术指标</h3><div class="source-meta"><span>Python 计算</span><b>市场分析 Agent</b><span>可复算</span></div></div>
+        <div class="source"><span class="source-num">6</span><h3>近期公司事件与行业资料</h3><div class="source-meta"><span>公开资料</span><b>公司研究 Agent</b><span>补充调查</span></div></div>
+      </div>
+
+      <div class="e-panel" id="logs">
+        <div class="log"><time>10:42</time><p>财报分析 Agent 开始检索公司披露。</p></div>
+        <div class="log"><time>10:43</time><p>找到 11 份候选资料，采用 6 份。</p></div>
+        <div class="log"><time>10:44</time><p>市场分析 Agent 完成延迟行情计算。</p></div>
+        <div class="log"><time>10:45</time><p>发现 1 处资本开支口径冲突，等待补查。</p></div>
+      </div>
+
+      <div class="e-panel" id="confirm">
+        <div class="confirm"><strong>资本开支趋势存在冲突</strong><p>公司披露强调 AI 投入效率，外部材料认为资本开支可能继续上升。请选择案卷处理方式。</p><div class="confirm-actions"><button>保留两种观点</button><button>以公司披露为主</button><button>补充检索后再决定</button></div></div>
+      </div>
+    </aside>
+  </div>
+  <div class="prototype-label">案卷控制台 · 独立样式原型</div>
+
+  <script>
+    const scrollArea=document.getElementById('document-scroll');
+    document.querySelectorAll('.rail,.evidence').forEach(panel=>panel.addEventListener('wheel',event=>{
+      if(window.innerWidth>760&&event.deltaY!==0){scrollArea.scrollBy({top:event.deltaY,left:0,behavior:'auto'});event.preventDefault()}
+    },{passive:false}));
+
+    const tabButtons=document.querySelectorAll('.e-tabs button');
+    tabButtons.forEach(button=>button.addEventListener('click',()=>{
+      tabButtons.forEach(item=>item.classList.toggle('active',item===button));
+      document.querySelectorAll('.e-panel').forEach(panel=>panel.classList.toggle('active',panel.id===button.dataset.panel));
+    }));
+
+    const input=document.getElementById('composer-input');
+    document.querySelectorAll('[data-prompt]').forEach(button=>button.addEventListener('click',()=>{
+      input.value=button.dataset.prompt;
+      input.focus();
+    }));
+
+    const status=document.getElementById('live-status');
+    const pause=document.getElementById('pause');
+    pause.addEventListener('click',()=>{
+      const paused=pause.dataset.paused==='true';
+      pause.dataset.paused=String(!paused);
+      pause.textContent=paused?'暂停':'继续';
+      status.innerHTML=paused?'<span class="live-dot"></span><span>正在补查外部事件</span>':'<span style="width:8px;height:8px;border-radius:50%;background:#9a5c12"></span><span style="color:#9a5c12">研究已暂停 · 当前结果已保留</span>';
+    });
+
+    document.getElementById('stop').addEventListener('click',()=>{
+      status.innerHTML='<span style="width:8px;height:8px;border-radius:50%;background:#68746f"></span><span style="color:#68746f">已停止 · 当前结果已保留</span>';
+      pause.disabled=true;
+    });
+
+    document.getElementById('scope').addEventListener('click',()=>{
+      input.value='调整研究范围：';
+      input.focus();
+    });
+
+    document.getElementById('plan-toggle').addEventListener('click',event=>{
+      const steps=document.getElementById('steps');
+      const hidden=steps.hidden;
+      steps.hidden=!hidden;
+      event.currentTarget.textContent=hidden?'收起计划':'展开计划';
+    });
+
+    function submitFeedback(){
+      if(!input.value.trim())return;
+      status.innerHTML='<span class="live-dot"></span><span>已收到反馈 · 正在调整研究计划</span>';
+      input.value='';
+    }
+    document.getElementById('send').addEventListener('click',submitFeedback);
+    input.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submitFeedback()}});
+  </script>
+</body>
+</html>
