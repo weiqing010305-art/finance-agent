@@ -1,132 +1,38 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from urllib.parse import urldefrag, urlparse
 
 from backend.database import Repository, TERMINAL_STATUSES
 from backend.deepseek_research import DeepSeekResearchClient
-from backend.openrouter_research import OpenRouterResearchClient
+from backend.durable_runner import DurableRunner
+from backend.redaction import redact_text, redact_url
 
 
-async def _continue_when_running(repository: Repository, task_id: str) -> bool:
+def _safe_url(value: str) -> str:
+    return redact_url(value)
+
+
+def _safe_error(exc: Exception) -> str:
+    message = str(exc).strip() or type(exc).__name__
+    return redact_text(message)[:500]
+
+
+async def _continue_when_running(
+    runner: DurableRunner,
+    task_id: str,
+    lease_token_provider: Callable[[], str],
+) -> bool:
     while True:
-        task = repository.get_task(task_id)
+        task = runner.repository.get_task(task_id)
         if task is None or task["status"] in TERMINAL_STATUSES:
             return False
-        if task["status"] != "paused":
+        if task["status"] == "pause_requested":
+            runner.acknowledge_pause(task_id, lease_token=lease_token_provider())
+        elif task["status"] == "running":
             return True
         await asyncio.sleep(0.1)
-
-
-async def run_openrouter_research(
-    repository: Repository,
-    task_id: str,
-    client: OpenRouterResearchClient,
-) -> None:
-    try:
-        if not await _continue_when_running(repository, task_id):
-            return
-        repository.update_task(
-            task_id,
-            status="running",
-            step="planning",
-            progress=12,
-            message="研究计划已建立：优先检索交易所披露、公司公告和可信财经来源",
-        )
-
-        if not await _continue_when_running(repository, task_id):
-            return
-        repository.update_task(
-            task_id,
-            status="running",
-            step="searching",
-            progress=34,
-            message="正在通过 OpenRouter 检索网页与公司披露",
-        )
-        task = repository.get_task(task_id)
-        if task is None:
-            return
-        report, evidence = await client.research(task)
-
-        if not await _continue_when_running(repository, task_id):
-            return
-        resolved_company = str(report.get("company") or "").strip()
-        if task["company"] == "自动识别中" and not resolved_company:
-            raise ValueError("无法从研究问题中唯一识别公司，请在问题中补充公司名称")
-        if resolved_company and resolved_company != "自动识别中":
-            task = repository.update_task_identity(
-                task_id,
-                company=resolved_company,
-                symbol=str(report.get("symbol") or "").strip() or None,
-                market=str(report.get("market") or "OTHER"),
-            )
-        repository.replace_evidence(task_id, evidence)
-        repository.update_task(
-            task_id,
-            status="running",
-            step="reading",
-            progress=64,
-            message=f"快速结果已生成：识别为 {task['company']}，已返回 {len(evidence)} 条来源；正在继续整理完整报告",
-            result=report,
-            payload={"evidence_count": len(evidence), "phase": "quick"},
-        )
-
-        if not await _continue_when_running(repository, task_id):
-            return
-        repository.update_task(
-            task_id,
-            status="running",
-            step="verifying",
-            progress=78,
-            message=f"正在核对 {len(evidence)} 条来源并绑定引用",
-        )
-
-        if not await _continue_when_running(repository, task_id):
-            return
-        repository.update_task(
-            task_id,
-            status="running",
-            step="writing",
-            progress=92,
-            message="快速简报已可查看，正在补充完整结论、风险与未知项",
-        )
-
-        try:
-            final_report = await client.synthesize(task, report, evidence)
-            completion_message = "完整研究已生成"
-            completion_payload = {"evidence_count": len(evidence), "provider": "openrouter", "phase": "full"}
-        except Exception as synthesis_error:
-            final_report = report
-            completion_message = "快速研究已完成；完整整理暂未完成"
-            completion_payload = {
-                "evidence_count": len(evidence),
-                "provider": "openrouter",
-                "phase": "quick",
-                "synthesis_error": str(synthesis_error),
-            }
-
-        if not await _continue_when_running(repository, task_id):
-            return
-        repository.update_task(
-            task_id,
-            status="completed",
-            step="completed",
-            progress=100,
-            message=completion_message,
-            kind="task.completed",
-            result=final_report,
-            payload=completion_payload,
-        )
-    except Exception as exc:  # pragma: no cover - defensive boundary
-        repository.update_task(
-            task_id,
-            status="failed",
-            step="failed",
-            progress=0,
-            message="研究执行失败",
-            kind="task.failed",
-            error=str(exc),
-        )
 
 
 def _deepseek_trace(event: dict) -> tuple[str, int, str, dict] | None:
@@ -176,16 +82,38 @@ def _deepseek_trace(event: dict) -> tuple[str, int, str, dict] | None:
 
 
 async def run_deepseek_research(
-    repository: Repository,
+    runner: DurableRunner | Repository,
     task_id: str,
-    client: DeepSeekResearchClient,
+    lease_token_provider: Callable[[], str] | DeepSeekResearchClient,
+    client: DeepSeekResearchClient | None = None,
 ) -> None:
+    if isinstance(runner, Repository):
+        repository = runner
+        runner = DurableRunner(repository)
+        snapshot = repository.get_runtime_snapshot(task_id)
+        lease = snapshot["lease"]
+        if lease is None:
+            raise RuntimeError("legacy research call requires an active run lease")
+        token = str(lease["lease_token"])
+        client = lease_token_provider  # type: ignore[assignment]
+        lease_token_provider = lambda: token
+    if client is None or not callable(lease_token_provider):
+        raise TypeError("client and lease token provider are required")
+    repository = runner.repository
     emitted: set[tuple[str, str]] = set()
     partial_evidence: dict[str, dict] = {}
     draft_started = False
     draft_closed = False
     draft_buffer = ""
     draft_tail = ""
+
+    async def keep_lease_alive() -> None:
+        while True:
+            await asyncio.sleep(10)
+            task = repository.get_task(task_id)
+            if task is None or task["status"] in TERMINAL_STATUSES or task["status"] == "paused":
+                return
+            runner.renew_lease(task_id, lease_token=lease_token_provider())
 
     def readable_draft_delta(event: dict) -> str:
         nonlocal draft_started, draft_closed, draft_buffer, draft_tail
@@ -222,15 +150,24 @@ async def run_deepseek_research(
         return visible
 
     try:
-        if not await _continue_when_running(repository, task_id):
+        if not await _continue_when_running(runner, task_id, lease_token_provider):
             return
-        repository.update_task(
+        runner.commit_step(
             task_id,
-            status="running",
-            step="planning",
+            lease_token=lease_token_provider(),
+            step_id="planning",
+            kind="planning",
+            step_input={"provider": "deepseek"},
+            step_output={"message": "正在理解研究问题并准备联网调查"},
+            idempotency_key="deepseek:planning",
+            frontier={
+                "plan_version": 1,
+                "ready_step_ids": ["provider_research"],
+                "running_step_ids": [],
+                "blocked_step_ids": [],
+                "completed_step_ids": ["planning"],
+            },
             progress=12,
-            message="正在理解研究问题并准备联网调查",
-            payload={"provider": "deepseek"},
         )
         task = repository.get_task(task_id)
         if task is None:
@@ -241,22 +178,28 @@ async def run_deepseek_research(
             if delta:
                 current = repository.get_task(task_id)
                 if current is not None and current["status"] not in TERMINAL_STATUSES:
-                    repository.update_task(
+                    repository.append_runtime_event(
                         task_id,
-                        status=current["status"] if current["status"] == "paused" else "running",
+                        kind="report.delta",
                         step="writing",
                         progress=max(current["progress"], 84),
                         message="正在生成研究报告",
-                        kind="task.report_delta",
                         payload={"delta": delta},
+                        lease_token=lease_token_provider(),
                     )
             trace = _deepseek_trace(event)
             if trace is None:
                 return
             step, progress, message, payload = trace
+            if payload.get("url"):
+                safe_event_url = _safe_url(str(payload["url"]))
+                payload = {**payload, "url": safe_event_url}
+                if payload.get("action") == "open_page":
+                    message = f"浏览页面：{safe_event_url}"
             if payload.get("action") == "open_page":
                 raw_url = str(payload.get("url") or "").strip()
                 url, _fragment = urldefrag(raw_url)
+                url = _safe_url(url)
                 parsed = urlparse(url)
                 if parsed.scheme in {"http", "https"} and parsed.netloc and url not in partial_evidence:
                     domain = parsed.netloc.lower().removeprefix("www.")
@@ -269,7 +212,11 @@ async def run_deepseek_research(
                         "excerpt": "研究过程中已访问该来源；即使报告整理失败，也可打开原文继续核对。",
                         "agent": "财报分析 Agent",
                     }
-                    repository.replace_evidence(task_id, list(partial_evidence.values()))
+                    repository.replace_evidence(
+                        task_id,
+                        list(partial_evidence.values()),
+                        lease_token=lease_token_provider(),
+                    )
             signature = (step, message)
             if signature in emitted:
                 return
@@ -277,17 +224,51 @@ async def run_deepseek_research(
             current = repository.get_task(task_id)
             if current is None or current["status"] in TERMINAL_STATUSES:
                 return
-            repository.update_task(
+            repository.append_runtime_event(
                 task_id,
-                status=current["status"] if current["status"] == "paused" else "running",
+                kind="provider.progress",
                 step=step,
                 progress=max(current["progress"], progress),
                 message=message,
                 payload=payload,
+                lease_token=lease_token_provider(),
             )
 
-        report, evidence = await client.research(task, on_event=record_provider_event)
-        if not await _continue_when_running(repository, task_id):
+        cached_provider_result = repository.get_completed_step_output(
+            task_id, "deepseek:provider_research"
+        )
+        provider_step_id = "provider_research"
+        provider_idempotency_key = "deepseek:provider_research"
+        provider_step_committed = False
+        if not (
+            cached_provider_result is not None
+            and isinstance(cached_provider_result.get("report"), dict)
+            and isinstance(cached_provider_result.get("evidence"), list)
+        ):
+            cached_provider_result = repository.get_completed_step_output(
+                task_id, "deepseek:provider_research:v2"
+            )
+            provider_step_id = "provider_research_v2"
+            provider_idempotency_key = "deepseek:provider_research:v2"
+        if (
+            cached_provider_result is not None
+            and isinstance(cached_provider_result.get("report"), dict)
+            and isinstance(cached_provider_result.get("evidence"), list)
+        ):
+            report = cached_provider_result["report"]
+            evidence = cached_provider_result["evidence"]
+            provider_step_committed = True
+        else:
+            if cached_provider_result is not None:
+                provider_step_id = "provider_research_v3"
+                provider_idempotency_key = "deepseek:provider_research:v3"
+            heartbeat = asyncio.create_task(keep_lease_alive())
+            try:
+                report, evidence = await client.research(task, on_event=record_provider_event)
+            finally:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+        if not await _continue_when_running(runner, task_id, lease_token_provider):
             return
 
         resolved_company = str(report.get("company") or "").strip()
@@ -299,27 +280,38 @@ async def run_deepseek_research(
                 company=resolved_company,
                 symbol=str(report.get("symbol") or "").strip() or None,
                 market=str(report.get("market") or "OTHER"),
+                lease_token=lease_token_provider(),
             )
-        repository.replace_evidence(task_id, evidence)
-        repository.update_task(
+        if not provider_step_committed:
+            runner.commit_step(
+                task_id,
+                lease_token=lease_token_provider(),
+                step_id=provider_step_id,
+                kind="provider_research",
+                step_input={"provider": "deepseek"},
+                step_output={"report": report, "evidence": evidence},
+                idempotency_key=provider_idempotency_key,
+                frontier={
+                    "plan_version": 1,
+                    "ready_step_ids": [],
+                    "running_step_ids": [],
+                    "blocked_step_ids": [],
+                    "completed_step_ids": ["planning", provider_step_id],
+                },
+                progress=94,
+            )
+        runner.complete_run(
             task_id,
-            status="completed",
-            step="completed",
-            progress=100,
-            message=f"研究完成，已整理 {len(evidence)} 条可访问来源",
-            kind="task.completed",
+            lease_token=lease_token_provider(),
             result=report,
-            payload={"evidence_count": len(evidence), "provider": "deepseek"},
+            evidence=evidence,
         )
     except Exception as exc:  # pragma: no cover - defensive boundary
-        error_message = str(exc).strip() or type(exc).__name__
-        repository.update_task(
-            task_id,
-            status="failed",
-            step="failed",
-            progress=0,
-            message=f"研究执行失败：{error_message}",
-            kind="task.failed",
-            error=error_message,
-            payload={"provider": "deepseek"},
-        )
+        error_message = _safe_error(exc)
+        task = repository.get_task(task_id)
+        if task is not None and task["status"] not in TERMINAL_STATUSES:
+            runner.fail_run(
+                task_id,
+                lease_token=lease_token_provider(),
+                error=error_message,
+            )

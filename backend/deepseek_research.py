@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Callable
@@ -250,7 +251,11 @@ class DeepSeekResearchClient:
         async with httpx.AsyncClient(timeout=timeout, headers=headers, transport=self.transport) as client:
             async def enrich_one(item: dict[str, Any]) -> None:
                 async with semaphore:
-                    metadata = await self._fetch_page_metadata(client, str(item.get("url") or ""))
+                    metadata = await self._fetch_page_metadata(
+                        client,
+                        str(item.get("url") or ""),
+                        resolve_dns=self.transport is None,
+                    )
                 if metadata.get("title"):
                     item["title"] = metadata["title"][:500]
                 if metadata.get("publisher"):
@@ -269,11 +274,15 @@ class DeepSeekResearchClient:
         cls,
         client: httpx.AsyncClient,
         url: str,
+        *,
+        resolve_dns: bool = True,
     ) -> dict[str, str]:
         current_url = url
         try:
             for _ in range(4):
                 if not cls._is_public_web_url(current_url):
+                    return {}
+                if resolve_dns and not await cls._resolves_only_to_public_addresses(current_url):
                     return {}
                 response = await client.get(current_url, follow_redirects=False)
                 if response.status_code in {301, 302, 303, 307, 308} and response.headers.get("location"):
@@ -309,6 +318,38 @@ class DeepSeekResearchClient:
         except ValueError:
             return True
         return not (address.is_private or address.is_loopback or address.is_link_local or address.is_reserved)
+
+    @staticmethod
+    async def _resolves_only_to_public_addresses(value: str) -> bool:
+        parsed = urlparse(value)
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            addresses = await asyncio.to_thread(
+                socket.getaddrinfo,
+                hostname,
+                port,
+                0,
+                socket.SOCK_STREAM,
+            )
+        except (socket.gaierror, OSError, UnicodeError):
+            return False
+        if not addresses:
+            return False
+        for entry in addresses:
+            address = ipaddress.ip_address(entry[4][0])
+            if (
+                address.is_private
+                or address.is_loopback
+                or address.is_link_local
+                or address.is_reserved
+                or address.is_multicast
+                or address.is_unspecified
+            ):
+                return False
+        return True
 
     @staticmethod
     def _terminal_error_message(event: dict[str, Any]) -> str:

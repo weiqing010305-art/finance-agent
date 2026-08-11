@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from backend.database import Repository, TERMINAL_STATUSES
+from collections.abc import Callable
+
+from backend.database import TERMINAL_STATUSES
+from backend.durable_runner import DurableRunner
 
 
 STAGES = [
@@ -73,44 +76,68 @@ MOCK_REPORT: dict[str, Any] = {
 }
 
 
-async def run_mock_research(repository: Repository, task_id: str, delay_seconds: float) -> None:
+async def _wait_until_running(
+    runner: DurableRunner,
+    task_id: str,
+    lease_token_provider: Callable[[], str],
+) -> bool:
+    while True:
+        task = runner.repository.get_task(task_id)
+        if task is None or task["status"] in TERMINAL_STATUSES:
+            return False
+        if task["status"] == "pause_requested":
+            runner.acknowledge_pause(task_id, lease_token=lease_token_provider())
+        elif task["status"] == "running":
+            return True
+        await asyncio.sleep(0.01)
+
+
+async def run_mock_research(
+    runner: DurableRunner,
+    task_id: str,
+    lease_token_provider: Callable[[], str],
+    delay_seconds: float,
+) -> None:
     try:
-        for step, progress, message in STAGES:
-            while True:
-                task = repository.get_task(task_id)
-                if task is None or task["status"] in TERMINAL_STATUSES:
-                    return
-                if task["status"] != "paused":
-                    break
-                await asyncio.sleep(min(delay_seconds, 0.1) or 0.01)
-
-            repository.update_task(
-                task_id,
-                status="running",
-                step=step,
-                progress=progress,
-                message=message,
-            )
+        snapshot = runner.repository.get_runtime_snapshot(task_id)
+        completed_steps: list[str] = list(
+            snapshot["checkpoint"]["frontier"].get("completed_step_ids", [])
+        )
+        for index, (step, progress, message) in enumerate(STAGES):
+            if step in completed_steps:
+                continue
+            if not await _wait_until_running(runner, task_id, lease_token_provider):
+                return
             await asyncio.sleep(delay_seconds)
-
-        repository.replace_evidence(task_id, MOCK_EVIDENCE)
-        repository.update_task(
+            completed_steps.append(step)
+            frontier = {
+                "plan_version": 1,
+                "ready_step_ids": [STAGES[index + 1][0]] if index + 1 < len(STAGES) else [],
+                "running_step_ids": [],
+                "blocked_step_ids": [],
+                "completed_step_ids": completed_steps.copy(),
+            }
+            runner.commit_step(
+                task_id,
+                lease_token=lease_token_provider(),
+                step_id=step,
+                kind=step,
+                step_input={"synthetic": True},
+                step_output={"message": message},
+                idempotency_key=f"mock:{step}",
+                frontier=frontier,
+                progress=progress,
+            )
+        if not await _wait_until_running(runner, task_id, lease_token_provider):
+            return
+        runner.complete_run(
             task_id,
-            status="completed",
-            step="completed",
-            progress=100,
-            message="研究完成",
-            kind="task.completed",
+            lease_token=lease_token_provider(),
             result=MOCK_REPORT,
+            evidence=MOCK_EVIDENCE,
         )
     except Exception as exc:  # pragma: no cover - defensive boundary
-        repository.update_task(
-            task_id,
-            status="failed",
-            step="failed",
-            progress=0,
-            message="研究执行失败",
-            kind="task.failed",
-            error=str(exc),
-        )
+        task = runner.repository.get_task(task_id)
+        if task is not None and task["status"] not in TERMINAL_STATUSES:
+            runner.fail_run(task_id, lease_token=lease_token_provider(), error=str(exc))
 

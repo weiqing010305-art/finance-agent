@@ -91,8 +91,8 @@ def test_stop_action_moves_from_taskbar_to_composer_while_running() -> None:
     assert "async function handleComposerAction" in source
     assert "!TERMINAL.has(runtime.taskStatus)" in source
     assert "await stopResearch()" in source
-    assert "ui.send.classList.toggle('is-stop', active)" in source
-    assert "const label = active ? '停止研究' : '发送'" in source
+    assert "ui.send.classList.toggle('is-stop', active && !paused)" in source
+    assert "const label = paused ? '恢复研究' : (active ? '暂停研究' : '发送')" in source
     assert "runtime.taskId ? '继续研究' : '开始研究'" not in source
 
 
@@ -154,7 +154,7 @@ def test_frontend_streams_report_draft_without_polluting_trace() -> None:
     assert 'id="report-draft"' in source
     assert "function appendReportDelta(delta)" in source
     assert "function markdownDraftMarkup(text)" in source
-    assert "event.kind === 'task.report_delta'" in stream_body
+    assert "event.kind === 'report.delta'" in stream_body
     assert "appendReportDelta(event.payload?.delta || '')" in stream_body
     assert "else appendLog(event)" in stream_body
     assert "resetStreamingDraft()" in source
@@ -166,8 +166,8 @@ def test_feedback_restarts_running_research_with_updated_question() -> None:
         "function bindPromptButtons", 1
     )[0]
 
-    assert "正在停止当前轮并应用反馈" in feedback_body
-    assert "await api(`/research/${runtime.taskId}/cancel`" in feedback_body
+    assert "正在安全暂停当前轮并应用反馈" in feedback_body
+    assert "await api(`/research/${runtime.taskId}/pause`" in feedback_body
     assert "继续研究：${message}" in feedback_body
 
 
@@ -182,6 +182,15 @@ def test_frontend_labels_deepseek_results_and_resets_elapsed_time_per_task() -> 
     assert "const switchedTask = runtime.taskId !== task.id" in apply_body
     assert "if (switchedTask) runtime.startedAt = Date.parse(task.created_at || '') || Date.now()" in apply_body
     assert "runtime.startedAt = runtime.startedAt ||" not in source
+
+
+def test_frontend_understands_all_six_durable_run_states() -> None:
+    source = frontend_source()
+
+    for state in ("running", "pause_requested", "paused", "resuming", "failed", "completed"):
+        assert state in source
+    assert "正在安全暂停" in source
+    assert "正在校验检查点并恢复" in source
 
 
 def test_agent_picker_leads_the_composer_toolbar_instead_of_the_left_rail() -> None:

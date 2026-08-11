@@ -1,5 +1,6 @@
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
@@ -8,7 +9,7 @@ from backend.app import create_app
 def wait_for_terminal(client: TestClient, task_id: str) -> dict:
     for _ in range(100):
         task = client.get(f"/api/research/{task_id}").json()
-        if task["status"] in {"completed", "failed", "cancelled"}:
+        if task["status"] in {"completed", "failed"}:
             return task
         time.sleep(0.01)
     raise AssertionError("mock research did not finish")
@@ -75,24 +76,13 @@ def test_file_frontend_origin_can_reach_api(tmp_path):
         assert response.headers["access-control-allow-origin"] == "null"
 
 
-def test_openrouter_mode_requires_key(tmp_path, monkeypatch):
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    app = create_app(
-        tmp_path / "test.db",
-        research_mode="openrouter",
-        load_env_file=False,
-    )
-    with TestClient(app) as client:
-        health = client.get("/api/health").json()
-        assert health["mode"] == "openrouter"
-        assert health["configured"] == "false"
-
-        response = client.post(
-            "/api/research",
-            json={"company": "腾讯控股", "question": "分析利润增长是否可持续"},
+def test_removed_openrouter_mode_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="must be 'mock' or 'deepseek'"):
+        create_app(
+            tmp_path / "test.db",
+            research_mode="openrouter",
+            load_env_file=False,
         )
-        assert response.status_code == 503
-        assert "OPENROUTER_API_KEY" in response.json()["detail"]
 
 
 def test_deepseek_mode_reports_model_and_requires_key(tmp_path, monkeypatch):
@@ -119,7 +109,35 @@ def test_deepseek_mode_reports_model_and_requires_key(tmp_path, monkeypatch):
         assert "DEEPSEEK_API_KEY" in response.json()["detail"]
 
 
-def test_pause_resume_feedback_and_cancel(tmp_path):
+def test_create_research_idempotency_key_does_not_duplicate_run_or_worker(tmp_path):
+    app = create_app(tmp_path / "idempotent.db", mock_delay=0.02)
+    with TestClient(app) as client:
+        headers = {"Idempotency-Key": "same-create"}
+        payload = {"company": "腾讯控股", "question": "分析利润增长是否可持续"}
+        first = client.post("/api/research", json=payload, headers=headers)
+        second = client.post("/api/research", json=payload, headers=headers)
+        assert first.status_code == second.status_code == 202
+        assert first.json()["id"] == second.json()["id"]
+
+        task = wait_for_terminal(client, first.json()["id"])
+        assert task["status"] == "completed"
+        events = app.state.repository.list_events(task["id"])
+        assert [event["kind"] for event in events].count("run.started") == 1
+        assert [event["kind"] for event in events].count("step.completed") == 5
+
+        completed_retry = client.post("/api/research", json=payload, headers=headers)
+        assert completed_retry.status_code == 202
+        assert completed_retry.json()["id"] == task["id"]
+
+        conflict = client.post(
+            "/api/research",
+            json={"company": "腾讯控股", "question": "改成另一个研究问题"},
+            headers=headers,
+        )
+        assert conflict.status_code == 409
+
+
+def test_pause_resume_feedback_and_legacy_cancel_maps_to_safe_pause(tmp_path):
     app = create_app(tmp_path / "test.db", mock_delay=0.08)
     with TestClient(app) as client:
         task = client.post(
@@ -130,7 +148,14 @@ def test_pause_resume_feedback_and_cancel(tmp_path):
 
         paused = client.post(f"/api/research/{task_id}/pause")
         assert paused.status_code == 200
-        assert paused.json()["status"] == "paused"
+        assert paused.json()["status"] == "pause_requested"
+
+        for _ in range(100):
+            current = client.get(f"/api/research/{task_id}").json()
+            if current["status"] == "paused":
+                break
+            time.sleep(0.01)
+        assert current["status"] == "paused"
 
         feedback = client.post(
             f"/api/research/{task_id}/feedback",
@@ -142,6 +167,87 @@ def test_pause_resume_feedback_and_cancel(tmp_path):
         assert resumed.status_code == 200
         assert resumed.json()["status"] == "running"
 
-        cancelled = client.post(f"/api/research/{task_id}/cancel")
-        assert cancelled.status_code == 200
-        assert cancelled.json()["status"] == "cancelled"
+        stopped = client.post(f"/api/research/{task_id}/cancel")
+        assert stopped.status_code == 200
+        assert stopped.json()["status"] == "pause_requested"
+
+
+def test_sse_last_event_id_replays_only_later_persisted_events(tmp_path):
+    app = create_app(tmp_path / "sse.db", mock_delay=0)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/research",
+            json={"company": "腾讯控股", "question": "分析利润增长是否可持续"},
+        ).json()
+        wait_for_terminal(client, created["id"])
+        events = app.state.repository.list_events(created["id"])
+        cursor = events[2]["id"]
+        expected_ids = [event["id"] for event in events if event["id"] > cursor]
+
+        with client.stream(
+            "GET",
+            f"/api/research/{created['id']}/events",
+            headers={"Last-Event-ID": str(cursor)},
+        ) as response:
+            replayed_ids = [
+                int(line.removeprefix("id: "))
+                for line in response.iter_lines()
+                if line.startswith("id: ")
+            ]
+
+        assert replayed_ids == expected_ids
+
+
+def test_sse_rejects_non_numeric_last_event_id(tmp_path):
+    app = create_app(tmp_path / "bad-sse.db", mock_delay=0)
+    with TestClient(app) as client:
+        task = client.post(
+            "/api/research",
+            json={"company": "腾讯控股", "question": "分析利润增长是否可持续"},
+        ).json()
+        response = client.get(
+            f"/api/research/{task['id']}/events",
+            headers={"Last-Event-ID": "not-a-number"},
+        )
+        assert response.status_code == 400
+
+
+def test_paused_create_retry_is_idempotent(tmp_path):
+    app = create_app(tmp_path / "paused-idempotent.db", mock_delay=0.1)
+    headers = {"Idempotency-Key": "paused-key"}
+    payload = {"company": "腾讯控股", "question": "分析利润增长是否可持续"}
+    with TestClient(app) as client:
+        first = client.post("/api/research", json=payload, headers=headers).json()
+        client.post(f"/api/research/{first['id']}/pause")
+        for _ in range(100):
+            paused = client.get(f"/api/research/{first['id']}").json()
+            if paused["status"] == "paused":
+                break
+            time.sleep(0.01)
+        retry = client.post("/api/research", json=payload, headers=headers)
+        assert retry.status_code == 202
+        assert retry.json()["id"] == first["id"]
+        assert retry.json()["status"] == "paused"
+
+
+def test_evidence_enrichment_rejects_active_run_before_external_call(tmp_path, monkeypatch):
+    called = False
+
+    async def should_not_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(
+        "backend.deepseek_research.DeepSeekResearchClient.enrich_evidence",
+        should_not_run,
+    )
+    app = create_app(tmp_path / "enrich-active.db", mock_delay=0.1)
+    with TestClient(app) as client:
+        task = client.post(
+            "/api/research",
+            json={"company": "腾讯控股", "question": "分析利润增长是否可持续"},
+        ).json()
+        response = client.post(f"/api/research/{task['id']}/evidence/enrich")
+        assert response.status_code == 409
+        assert called is False

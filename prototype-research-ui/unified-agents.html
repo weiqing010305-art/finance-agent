@@ -268,7 +268,7 @@
           <div class="user-message"><div class="user-bubble"><p id="research-question">腾讯近三年利润增长由哪些业务驱动？这种增长是否可持续？</p><small id="task-meta-line">财报分析 Agent · 标准深度 · 等待后端</small></div></div>
         </section>
         <header class="case-head">
-          <div class="kicker"><b id="report-kicker">新公司案卷</b><span>财报分析 Agent · 七部分候选结构</span><span>·</span><span id="report-provider">OpenRouter 联网研究</span></div>
+          <div class="kicker"><b id="report-kicker">新公司案卷</b><span>财报分析 Agent · 七部分候选结构</span><span>·</span><span id="report-provider">DeepSeek 联网研究</span></div>
           <h1 id="report-title">从一家你关心的公司开始</h1>
           <p id="report-description">直接提出公司研究问题，Agent 会自动识别公司、股票代码和市场，并生成带数字引用的调查结果。</p>
         </header>
@@ -321,7 +321,7 @@
 
   <script>
     const API_BASE = 'http://127.0.0.1:8780/api';
-    const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+    const TERMINAL = new Set(['completed', 'failed']);
     
     const ui = {
       scrollArea: document.getElementById('document-scroll'),
@@ -356,7 +356,7 @@
       traceState: document.getElementById('agent-trace-state'),
     };
     
-    const runtime = { taskId: null, taskStatus: null, stream: null, eventIds: new Set(), enrichedEvidenceTasks: new Set(), evidence: [], draftText: '', startedAt: null, finishedAt: null, traceTimer: null, traceTone: 'running', provider: 'openrouter', company: '', symbol: '', market: 'HK', question: '', depth: 'standard' };
+    const runtime = { taskId: null, taskStatus: null, stream: null, eventIds: new Set(), enrichedEvidenceTasks: new Set(), evidence: [], draftText: '', startedAt: null, finishedAt: null, traceTimer: null, traceTone: 'running', provider: 'deepseek', company: '', symbol: '', market: 'HK', question: '', depth: 'standard' };
     
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>'"]/g, character => ({
@@ -402,7 +402,7 @@
     }
     
     function setStatus(message, tone = 'running') {
-      const colors = { running: '#145a46', paused: '#9a5c12', completed: '#145a46', failed: '#a13a36', cancelled: '#68746f', offline: '#68746f' };
+      const colors = { running: '#145a46', pause_requested: '#9a5c12', paused: '#9a5c12', resuming: '#145a46', completed: '#145a46', failed: '#a13a36', offline: '#68746f' };
       const color = colors[tone] || colors.running;
       const dot = tone === 'running' ? '<span class="live-dot"></span>' : `<span style="width:8px;height:8px;border-radius:50%;background:${color}"></span>`;
       ui.status.innerHTML = `${dot}<span style="color:${color}">${escapeHtml(message)}</span>`;
@@ -428,8 +428,9 @@
       const labels = {
         completed: `已思考（用时 ${elapsed}）`,
         failed: `思考中断（用时 ${elapsed}）`,
-        cancelled: `已停止思考（用时 ${elapsed}）`,
+        pause_requested: `正在安全暂停（已用时 ${elapsed}）`,
         paused: `已暂停（用时 ${elapsed}）`,
+        resuming: `正在恢复（已用时 ${elapsed}）`,
       };
       ui.traceState.textContent = labels[runtime.traceTone] || `思考中（已用时 ${elapsed}）`;
     }
@@ -441,7 +442,7 @@
     }
 
     function providerLabel(provider = runtime.provider) {
-      return provider === 'deepseek' ? 'DeepSeek 联网研究' : provider === 'openrouter' ? 'OpenRouter 联网研究' : '联网研究';
+      return provider === 'deepseek' ? 'DeepSeek 联网研究' : provider === 'mock' ? '本地模拟研究' : '联网研究';
     }
 
     function setTraceExpanded(expanded) {
@@ -463,19 +464,20 @@
       ui.traceSection.hidden = false;
       ui.traceToggle.dataset.tone = tone;
       runtime.traceTone = tone;
-      if (tone === 'running' || tone === 'queued') startTraceClock();
+      if (tone === 'running' || tone === 'pause_requested' || tone === 'resuming') startTraceClock();
       else stopTraceClock();
       updateTraceClock();
     }
 
     function setComposerAction(status = runtime.taskStatus) {
       const active = Boolean(runtime.taskId) && !TERMINAL.has(status);
-      ui.send.classList.toggle('is-stop', active);
-      const label = active ? '停止研究' : '发送';
+      const paused = status === 'paused';
+      ui.send.classList.toggle('is-stop', active && !paused);
+      const label = paused ? '恢复研究' : (active ? '暂停研究' : '发送');
       ui.send.setAttribute('aria-label', label);
-      ui.send.title = active ? '停止当前研究' : '发送';
+      ui.send.title = paused ? '从检查点恢复研究' : (active ? '安全暂停当前研究' : '发送');
       ui.composerHint.textContent = active
-        ? '研究进行中 · 点击右侧按钮停止，停止后可继续研究'
+        ? (paused ? '研究已暂停 · 点击右侧按钮从检查点恢复' : '研究进行中 · 点击右侧按钮在安全检查点暂停')
         : 'Agent 会自动识别公司、股票代码和市场 · Enter 发送';
     }
 
@@ -708,11 +710,11 @@
       ui.meta.textContent = `财报分析 Agent · ${depthLabel}深度 · ${task.progress}%`;
       setComposerAction(task.status);
       const labels = {
-        queued: '研究任务已创建', running: `研究进行中 · ${task.progress}%`, paused: '研究已暂停 · 当前结果已保留',
-        completed: '研究完成', failed: task.error || '研究失败', cancelled: '研究已停止 · 当前结果已保留',
+        running: `研究进行中 · ${task.progress}%`, pause_requested: '正在安全暂停 · 当前步骤完成后暂停', paused: '研究已暂停 · 当前结果已保留', resuming: '正在校验检查点并恢复',
+        completed: '研究完成', failed: task.error || '研究失败',
       };
       setStatus(labels[task.status] || task.status, task.status);
-      const traceLabels = { queued: '准备中', running: `执行中 ${task.progress}%`, paused: '已暂停', completed: '已完成', failed: '执行失败', cancelled: '已停止' };
+      const traceLabels = { running: `执行中 ${task.progress}%`, pause_requested: '待暂停', paused: '已暂停', resuming: '恢复中', completed: '已完成', failed: '执行失败' };
       setTraceState(traceLabels[task.status] || task.status, task.status);
       renderEvidence(task.evidence || []);
       renderReport(task);
@@ -756,7 +758,7 @@
       stream.addEventListener('progress', async message => {
         const event = JSON.parse(message.data);
         runtime.taskStatus = event.status;
-        if (event.kind === 'task.report_delta') appendReportDelta(event.payload?.delta || '');
+        if (event.kind === 'report.delta') appendReportDelta(event.payload?.delta || '');
         else appendLog(event);
         setTraceState(event.status === 'running' ? `执行中 ${event.progress}%` : event.message, event.status);
         ui.meta.textContent = `财报分析 Agent · 标准深度 · ${event.progress}%`;
@@ -854,8 +856,7 @@
       if (!runtime.taskId) return;
       ui.send.disabled = true;
       try {
-        const task = await api(`/research/${runtime.taskId}/cancel`, { method: 'POST' });
-        closeStream();
+        const task = await api(`/research/${runtime.taskId}/pause`, { method: 'POST' });
         applyTask(task);
       } catch (error) {
         setStatus(error.message, 'failed');
@@ -866,6 +867,20 @@
     }
 
     async function handleComposerAction() {
+      if (runtime.taskId && runtime.taskStatus === 'paused') {
+        ui.send.disabled = true;
+        try {
+          const task = await api(`/research/${runtime.taskId}/resume`, { method: 'POST' });
+          applyTask(task);
+          openStream(task.id);
+        } catch (error) {
+          setStatus(error.message, 'failed');
+        } finally {
+          ui.send.disabled = false;
+          setComposerAction(runtime.taskStatus);
+        }
+        return;
+      }
       if (runtime.taskId && !TERMINAL.has(runtime.taskStatus)) {
         await stopResearch();
         return;
@@ -899,10 +914,10 @@
         };
         await api(`/research/${runtime.taskId}/feedback`, { method: 'POST', body: JSON.stringify({ message }) });
         if (!TERMINAL.has(runtime.taskStatus)) {
-          setStatus('正在停止当前轮并应用反馈');
+          setStatus('正在安全暂停当前轮并应用反馈');
           setTraceState('正在应用反馈');
           try {
-            await api(`/research/${runtime.taskId}/cancel`, { method: 'POST' });
+            await api(`/research/${runtime.taskId}/pause`, { method: 'POST' });
           } catch (cancelError) {
             if (!String(cancelError.message).includes('已经结束')) throw cancelError;
           }
