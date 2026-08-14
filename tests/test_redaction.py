@@ -1,4 +1,4 @@
-from backend.redaction import redact_text, redact_url
+from backend.redaction import redact_text, redact_url, redact_value
 
 
 def test_redact_url_removes_userinfo_and_all_common_secret_query_values():
@@ -20,3 +20,14 @@ def test_redact_text_consumes_complete_bearer_credential():
     safe = redact_text("request failed: Authorization: Bearer supersecret123")
     assert "supersecret123" not in safe
     assert "Authorization=[REDACTED]" in safe
+
+
+def test_redact_value_recursively_masks_secret_fields_and_urls():
+    safe = redact_value({
+        "api-key": "secret-value",
+        "nested": [{"url": "https://u:p@example.com/?refresh_token=hidden"}],
+    })
+    assert safe["api-key"] == "[REDACTED]"
+    assert "secret-value" not in str(safe)
+    assert "hidden" not in str(safe)
+    assert "u:p" not in str(safe)

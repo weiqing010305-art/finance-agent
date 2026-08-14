@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 
@@ -51,3 +52,27 @@ def redact_text(value: str) -> str:
     result = _BEARER.sub("Bearer [REDACTED]", result)
     result = _SK_KEY.sub("[REDACTED]", result)
     return result
+
+
+def redact_value(value: Any) -> Any:
+    """Recursively sanitize values before they cross a persistence/API boundary."""
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).lower().replace("-", "_")
+            if normalized in {
+                "access_token", "api_key", "apikey", "authorization", "client_secret",
+                "credential", "id_token", "password", "passwd", "refresh_token",
+                "secret", "session_token", "token",
+            }:
+                sanitized[str(key)] = "[REDACTED]"
+            else:
+                sanitized[str(key)] = redact_value(item)
+        return sanitized
+    if isinstance(value, list):
+        return [redact_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [redact_value(item) for item in value]
+    return value

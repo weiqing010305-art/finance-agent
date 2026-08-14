@@ -1,0 +1,12 @@
+[
+  {"name":"verified_company_fact","expected":"accept"},
+  {"name":"unsupported_company_fact","expected":"reject"},
+  {"name":"explicit_preference","expected":"accept"},
+  {"name":"unconfirmed_preference","expected":"reject"},
+  {"name":"same_content_dedup","expected":"merge"},
+  {"name":"same_period_conflict","expected":"conflicted"},
+  {"name":"newer_period","expected":"supersede"},
+  {"name":"expired_memory","expected":"not_injected"},
+  {"name":"cross_tenant","expected":"not_injected"},
+  {"name":"tombstoned_memory","expected":"not_injected"}
+]

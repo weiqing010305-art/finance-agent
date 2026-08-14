@@ -6,3 +6,12 @@ __pycache__/
 backend/.env
 backend/data/*.db
 backend/data/*.db-*
+secrets/
+backups/
+.backup-staging/
+.phase7-check/
+.phase*-check/
+.phase*-review*/
+.pytest-*/
+.test-tmp*/
+compose-validation-placeholder

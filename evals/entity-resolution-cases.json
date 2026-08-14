@@ -1,0 +1,9 @@
+[
+  {"id":"unique-tencent","message":"研究腾讯盈利质量","expected_status":"resolved","expected_symbols":["0700.HK"]},
+  {"id":"unique-maotai","message":"分析贵州茅台估值","expected_status":"resolved","expected_symbols":["600519.SH"]},
+  {"id":"exact-nvidia","message":"看看 NVDA.US 风险","expected_status":"resolved","expected_symbols":["NVDA.US"]},
+  {"id":"ambiguous-alibaba","message":"研究阿里巴巴","expected_status":"ambiguous","expected_symbols":["9988.HK","BABA.US"]},
+  {"id":"ambiguous-byd","message":"分析比亚迪现金流","expected_status":"ambiguous","expected_symbols":["002594.SZ","1211.HK"]},
+  {"id":"unknown","message":"研究完全未知公司","expected_status":"unresolved","expected_symbols":[]},
+  {"id":"typo-fail-closed","message":"研究阿里爸爸","expected_status":"unresolved","expected_symbols":[]}
+]

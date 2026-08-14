@@ -5,4 +5,17 @@ langgraph==1.2.10
 pydantic==2.13.4
 pytest==9.1.1
 uvicorn==0.52.0
+SQLAlchemy==2.0.43
+alembic==1.16.5
+psycopg[binary]==3.2.10
+argon2-cffi==25.1.0
+PyJWT==2.10.1
+email-validator==2.2.0
+redis==6.4.0
+dramatiq[redis]==1.18.0
+boto3==1.40.30
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-grpc==1.44.0
+prometheus-client==0.25.0
+cryptography==49.0.0
 

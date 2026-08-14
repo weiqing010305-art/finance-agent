@@ -24,6 +24,8 @@ EXPECTED_TABLES = {
     "research_intakes",
     "entity_confirmations",
     "execution_authorizations",
+    "tool_execution_claims",
+    "execution_authorization_attempts",
 }
 
 
@@ -98,7 +100,7 @@ def test_fresh_database_has_versioned_durable_schema(tmp_path):
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,), (12,), (13,)]
     assert journal_mode.lower() == "wal"
 
 
@@ -201,7 +203,7 @@ def test_version_two_backfills_active_runs_from_early_phase_one_schema(tmp_path)
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row[0] for row in versions] == [1, 2, 3, 4, 5, 6, 7]
+        assert [row[0] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
 
 def test_version_seven_upgrades_a_version_six_database(tmp_path):
@@ -212,14 +214,115 @@ def test_version_seven_upgrades_a_version_six_database(tmp_path):
         connection.execute("DROP TABLE execution_authorizations")
         connection.execute("DROP TABLE entity_confirmations")
         connection.execute("DROP TABLE research_intakes")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 7")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 7")
 
     repository.initialize()
 
     assert {"research_intakes", "entity_confirmations", "execution_authorizations"} <= table_names(path)
     with repository.connect() as connection:
         version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-    assert version == 7
+        assert version == 13
+
+
+def test_version_eight_upgrades_v7_authorization_data_and_is_idempotent(tmp_path):
+    path = tmp_path / "v7-data.db"
+    repository = Repository(path)
+    repository.initialize()
+    with repository.connect() as connection:
+        connection.execute("DROP TABLE tool_execution_claims")
+        connection.execute("ALTER TABLE execution_authorizations RENAME TO execution_authorizations_v8")
+        connection.execute(
+            """
+            CREATE TABLE execution_authorizations (
+                id TEXT PRIMARY KEY, run_id TEXT NOT NULL, plan_version INTEGER NOT NULL,
+                step_id TEXT NOT NULL, tool_name TEXT NOT NULL, decision TEXT NOT NULL,
+                reason_codes_json TEXT NOT NULL, estimated_cost INTEGER NOT NULL,
+                budget_before INTEGER NOT NULL, created_at TEXT NOT NULL,
+                UNIQUE(run_id, plan_version, step_id)
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO execution_authorizations VALUES ('old-allow','run-a',1,'s1','search_web','allow','[\"POLICY_ALLOW\"]',3,10,'2026-01-01T00:00:00+00:00')"
+        )
+        connection.execute(
+            "INSERT INTO execution_authorizations VALUES ('old-deny','run-b',1,'s2','search_filings','deny','[\"ENTITY_NOT_CONFIRMED\"]',2,10,'2026-01-01T00:00:00+00:00')"
+        )
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 8")
+        connection.execute("DROP TABLE execution_authorizations_v8")
+    repository.initialize()
+    repository.initialize()
+    with repository.connect() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(execution_authorizations)")}
+        versions = connection.execute("SELECT version FROM schema_migrations WHERE version = 8").fetchall()
+        migrated = connection.execute(
+            "SELECT id, status, effective_cost, capability_token_hash FROM execution_authorizations ORDER BY id"
+        ).fetchall()
+    assert {"capability_token_hash", "status", "effective_cost"} <= columns
+    assert [tuple(row) for row in versions] == [(8,)]
+    assert [tuple(row) for row in migrated] == [
+        ("old-allow", "recorded", 0, None),
+        ("old-deny", "recorded", 0, None),
+    ]
+    assert "tool_execution_claims" in table_names(path)
+
+
+def test_version_eight_malformed_claim_table_rolls_back(tmp_path):
+    path = tmp_path / "broken-v8.db"
+    repository = Repository(path)
+    repository.initialize()
+    with repository.connect() as connection:
+        connection.execute("DROP TABLE tool_execution_claims")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 8")
+        connection.execute("CREATE TABLE tool_execution_claims(id TEXT PRIMARY KEY)")
+    with pytest.raises(sqlite3.OperationalError):
+        repository.initialize()
+    with repository.connect() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(execution_authorizations)")}
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 8"
+        ).fetchone()[0] == 0
+        assert "capability_token_hash" in columns
+        assert set(connection.execute("PRAGMA table_info(tool_execution_claims)").fetchone()) >= {0, "id"}
+
+
+def test_version_nine_upgrades_an_already_published_v8_database(tmp_path):
+    path = tmp_path / "published-v8.db"
+    repository = Repository(path)
+    repository.initialize()
+    with repository.connect() as connection:
+        connection.execute("DROP TABLE execution_authorization_attempts")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 9")
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 8
+    repository.initialize()
+    repository.initialize()
+    with repository.connect() as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(execution_authorization_attempts)")]
+        versions = connection.execute("SELECT version FROM schema_migrations WHERE version = 9").fetchall()
+    assert columns == [
+        "id", "authorization_id", "decision", "reason_codes_json",
+        "effective_cost", "budget_before", "created_at",
+    ]
+    assert [tuple(row) for row in versions] == [(9,)]
+
+
+def test_version_nine_malformed_attempt_table_rolls_back(tmp_path):
+    path = tmp_path / "broken-v9.db"
+    repository = Repository(path)
+    repository.initialize()
+    with repository.connect() as connection:
+        connection.execute("DROP TABLE execution_authorization_attempts")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 9")
+        connection.execute("CREATE TABLE execution_authorization_attempts(id TEXT PRIMARY KEY)")
+    with pytest.raises(sqlite3.OperationalError):
+        repository.initialize()
+    with repository.connect() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 9"
+        ).fetchone()[0] == 0
+        assert [row[1] for row in connection.execute(
+            "PRAGMA table_info(execution_authorization_attempts)"
+        )] == ["id"]
 
 
 def test_version_five_upgrades_a_version_four_database(tmp_path):

@@ -15,7 +15,7 @@
 **Files:** `backend/schemas.py`, `backend/migrations.py`, `backend/database.py`, `tests/test_phase3_migrations.py`
 
 1. Write failing migration tests for fresh and v6 databases.
-2. Add schema v7 intake, entity confirmation and authorization tables with indexes and CHECK constraints.
+2. Add schema v9 intake, entity confirmation, authorization reservation/history and tool claim/observation tables with indexes and CHECK constraints.
 3. Add strict Pydantic entity, candidate, plan, step, authorization and API schemas.
 4. Run migration/schema tests; malformed or conflicting identities must roll back.
 

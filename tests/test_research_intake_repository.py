@@ -5,6 +5,9 @@ import pytest
 
 from backend.database import Repository
 from backend.entity_resolver import EntityResolver
+from backend.durable_runner import DurableRunner
+from backend.planner import DeterministicPlanner
+from backend.schemas import ResearchCreate, SecurityCandidate
 
 
 def save_route(repository: Repository, request_id: str, message: str, *, research: bool = True):
@@ -135,3 +138,50 @@ def test_concurrent_different_confirmations_have_one_winner(tmp_path):
         results = list(pool.map(choose, [item["candidate_id"] for item in resolution["candidates"]]))
     assert sum(isinstance(item, dict) for item in results) == 1
     assert sum(isinstance(item, str) for item in results) == 1
+
+
+def test_phase3_run_and_real_initial_plan_are_created_in_one_transaction(tmp_path):
+    repository = Repository(tmp_path / "atomic-create.db")
+    repository.initialize()
+    save_route(repository, "route-atomic", "研究腾讯盈利质量")
+    resolution = EntityResolver().resolve("研究腾讯盈利质量").model_dump()
+    intake = repository.create_research_intake(
+        "route-atomic", depth="quick", budget_limit=20, resolution=resolution
+    )
+    entity = SecurityCandidate.model_validate(resolution["selected"])
+    plan = DeterministicPlanner().create_plan(
+        question=intake["message"], entity=entity, depth="quick", budget_limit=20,
+        version=1,
+    )
+    created = DurableRunner(repository).create_run(
+        ResearchCreate(
+            company=entity.company, symbol=entity.symbol, market=entity.market,
+            question=intake["message"], depth="quick",
+        ),
+        owner_id="worker", idempotency_key=f"intake:{intake['id']}",
+        intake_id=intake["id"], initial_plan=plan.model_dump(),
+    )
+    snapshot = repository.get_runtime_snapshot(created.run["id"])
+    assert snapshot["plan"]["steps"]
+    assert snapshot["checkpoint"]["frontier"]["ready_step_ids"]
+    assert repository.get_research_intake(intake["id"])["run_id"] == created.run["id"]
+
+
+def test_invalid_initial_plan_leaves_intake_unlinked(tmp_path):
+    repository = Repository(tmp_path / "atomic-rollback.db")
+    repository.initialize()
+    save_route(repository, "route-rollback", "研究腾讯盈利质量")
+    resolution = EntityResolver().resolve("研究腾讯盈利质量").model_dump()
+    intake = repository.create_research_intake(
+        "route-rollback", depth="quick", budget_limit=20, resolution=resolution
+    )
+    with pytest.raises(ValueError):
+        DurableRunner(repository).create_run(
+            ResearchCreate(company="腾讯控股", symbol="0700.HK", market="HK", question=intake["message"]),
+            owner_id="worker", idempotency_key=f"intake:{intake['id']}",
+            intake_id=intake["id"],
+            initial_plan={"version": 1, "goal": intake["message"], "steps": []},
+        )
+    assert repository.get_research_intake(intake["id"])["run_id"] is None
+    with repository.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0] == 0

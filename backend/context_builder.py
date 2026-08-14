@@ -5,6 +5,8 @@ from typing import Any
 
 from backend.database import Repository, TERMINAL_STATUSES
 from backend.redaction import redact_text
+from backend.memory_retrieval import MemoryPrincipal, MemoryRetriever
+from backend.schemas import MemoryContextItem
 
 
 @dataclass(frozen=True)
@@ -17,13 +19,17 @@ class CaseContext:
     active_run: dict[str, Any] | None = None
     has_report: bool = False
     report_has_evidence: bool = False
+    long_term_memory: list[MemoryContextItem] = field(default_factory=list)
 
 
 class ContextBuilder:
-    def __init__(self, repository: Repository, *, max_turns: int = 8, max_chars: int = 4_000):
+    def __init__(self, repository: Repository, *, max_turns: int = 8, max_chars: int = 4_000,
+                 tenant_id: str = "local", user_id: str = "default"):
         self.repository = repository
         self.max_turns = max(0, max_turns)
         self.max_chars = max(0, max_chars)
+        self.memory_retriever = MemoryRetriever(repository)
+        self.principal = MemoryPrincipal(tenant_id=tenant_id, user_id=user_id)
 
     def build(self, case_id: str | None) -> CaseContext:
         if case_id is None:
@@ -74,6 +80,10 @@ class ContextBuilder:
         latest = self.repository.get_latest_task_for_case(case_id)
         has_report = bool(latest and latest["status"] == "completed" and latest["result"])
         report_has_evidence = bool(has_report and latest["evidence"])
+        memories = self.memory_retriever.retrieve(
+            principal=self.principal, case_id=case_id, company=case["company"],
+            symbol=case["symbol"], market=case["market"],
+        )
 
         return CaseContext(
             case_id=case_id,
@@ -84,4 +94,5 @@ class ContextBuilder:
             active_run=active_projection,
             has_report=has_report,
             report_has_evidence=report_has_evidence,
+            long_term_memory=memories,
         )

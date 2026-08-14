@@ -367,8 +367,8 @@ verified -> superseded / deleted
 
 ### 11.1 技术路线
 
-- **本地单用户阶段**：SQLite，开启 WAL；全文检索使用 FTS5；
-- **公开部署/多用户阶段**：PostgreSQL；确有收益时使用 pgvector；
+- **本地单用户阶段**：SQLite 开启 WAL，保存业务事实；Milvus 保存可重建检索索引；
+- **公开部署/多用户阶段**：PostgreSQL 保存业务事实，Milvus 独立扩展检索容量；
 - Repository 层隔离方言，迁移使用 Alembic；
 - 从第一天预留 `user_id`、`tenant_id` 和作用域字段，避免后续数据隔离返工。
 
@@ -406,7 +406,7 @@ RAG 服务于已归档财报、公告、研究文档、当前 case 证据和经�
 ```text
 发现来源 -> 下载并保存快照 -> SHA-256 去重/版本化
 -> PDF/HTML 解析 -> 元数据提取 -> 结构化分块
--> 质量检查 -> FTS 索引 -> 可选向量 -> ready
+-> 质量检查 -> Milvus BM25 sparse + dense 索引 -> ready
 ```
 
 分块按标题、章节、子章节、段落、表格和页码进行，不只按固定 token 切割。每个 chunk 保存文档版本、页码、章节路径、父块、来源 URL、发布日期和内容哈希。财务表格单独保存表头、单位、币种和页码，避免数值脱离语境。
@@ -416,8 +416,8 @@ RAG 服务于已归档财报、公告、研究文档、当前 case 证据和经�
 ```text
 Planner 查询
 -> 公司/市场/期间/文档类型过滤
--> FTS/BM25 + 可选向量检索
--> Reciprocal Rank Fusion
+-> Milvus BM25 sparse + dense vector retrieval
+-> Reciprocal Rank Fusion（默认）
 -> 权威度与新鲜度加权
 -> 可选 rerank
 -> 去重与来源多样性
@@ -425,7 +425,7 @@ Planner 查询
 -> Evidence Pack
 ```
 
-第一版只实现 SQLite FTS5 和结构化过滤。只有离线评测证明收益后，才增加 embeddings 和 RRF；小数据集先精确向量检索，不急于 HNSW。公开部署时对应迁移到 PostgreSQL FTS + pgvector。
+根据 [ADR-0008](../adr/0008-use-milvus-hybrid-retrieval.md)，检索目标态固定为 Milvus 混合检索：BM25 sparse 与 dense embedding 两路召回，默认使用 RRF 融合。`WeightedRanker`、独立 reranker、索引类型和参数仍需通过固定评测集决定。关系数据库和对象存储是事实源，Milvus 只保存可重建索引。
 
 ### 12.3 RAG 评测
 
@@ -669,26 +669,75 @@ Memory 还需做消融：无记忆、仅短期、短期加长期，比较质量�
 - 六个最小研究工具及其契约；
 - Executor、一次重新规划和降级矩阵。
 
+实现状态（2026-08-12）：独立 subagent 第五轮审查通过，用户已验收。当前实现包含 schema v9 intake/实体确认/授权预留与不可变尝试历史/工具 claim-observation 账本、确定性 Resolver、LangGraph intake 图、原子 run+DAG 创建、严格版本化 Planner DAG、六工具 Registry、Policy/Budget Gate、lease heartbeat、一次重规划和 Phase 3 Worker 恢复。Milvus 混合检索目标见 [ADR-0008](../adr/0008-use-milvus-hybrid-retrieval.md)，验证记录见 [Phase 3 Verification](../reviews/phase-3-verification.md)。
+
 ### Phase 4：证据、RAG 与报告
 
 - 文档摄取和版本化；
-- SQLite FTS5 检索及评测；
+- Milvus collection、BM25 sparse + dense embedding 混合检索及评测；
 - Evidence/Claim 图和 Verifier；
 - 可恢复流式报告。
+
+实现状态（2026-08-12）：独立 subagent 审查通过（代码/离线范围），等待用户验收；真实 Milvus/BGE 集成门禁未执行。已实现 schema v11 文档/Evidence/Claim/Report 事实表与 ingestion claim fencing、确定性摄取切块、BGE Large embedding contract、Milvus BM25+dense+RRF adapter、作用域受控的 `retrieve_documents`、extractive Claim Verifier、引用约束报告、持久化 `report.delta` 与最终原子完成。正式后端使用 Milvus Standalone，离线单元测试仅使用明确标识的内存替身；本轮真实 Milvus 未运行，不能将 smoke 指标当作线上质量证明。详见 [ADR-0009](../adr/0009-use-bge-large-zh-v1-5-embeddings.md)、[Phase 4 设计](../plans/2026-08-12-phase-4-rag-evidence-report-design.md)、[实施计划](../plans/2026-08-12-phase-4-rag-evidence-report.md)和[Phase 4 Verification](../reviews/phase-4-verification.md)。
 
 ### Phase 5：长期记忆和加固
 
 - memory candidate/verify/supersede；
 - 后台整合和隐私删除；
 - 故障注入、恢复、成本和安全评测；
-- 只有评测证明必要时才增加 embeddings、reranker 或多 Agent。
+- embeddings 已随 Milvus 混合检索纳入主线；只有评测证明必要时才增加独立 reranker 或多 Agent。
 
-### Phase 6：公开部署
+设计状态（2026-08-13）：核心决策已由用户确认并冻结，详见 [ADR-0010](../adr/0010-govern-long-term-memory-lifecycle-and-retention.md)、[Phase 5 设计](../plans/2026-08-13-phase-5-memory-hardening-design.md)和[实施计划](../plans/2026-08-13-phase-5-memory-hardening.md)。公司研究事实 TTL 为 90 天；采用白名单验证写入、三层作用域、不可覆盖的冲突演进、结构化过滤优先的混合检索和两阶段删除。
+
+实现状态（2026-08-13）：schema v13（v12 核心表 + v13 激活授权与迁移防护）、白名单验证写入、不可变版本账本、TTL、冲突/替代、SQLite 作用域预过滤、Context Builder 结构化注入、用户记忆 API、tombstone-first fenced 删除和报告归并已实现；独立 subagent 已通过代码/离线范围验收，最终独立全量 `313 passed, 1 skipped`。Milvus 仍只作为派生索引，不参与授权判定；真实 Milvus 门禁未执行。
+
+安全边界：`task_experience` 自动写入暂时关闭，直到 Phase 6 提供持久化、结构化、可重放的执行摘要合同；模型自由文本不能冒充任务经验。实体身份按用户确认的 case 私有作用域保存，不作为公共公司事实共享。
+
+### Phase 6：本地生产化部署
 
 - PostgreSQL 迁移和多用户隔离；
 - 对象存储、备份恢复、限流和认证；
-- 需要向量检索时引入 pgvector；
+- Milvus 多用户 collection/partition 策略、容量和备份恢复；
 - 完成 README、架构图、演示脚本和可复现实验结果。
+
+实现状态（2026-08-14）：代码与离线契约已实现，正式运行时使用
+PostgreSQL/RLS、Argon2id、15 分钟 JWT、HttpOnly 轮换 refresh cookie、固定
+RBAC、PostgreSQL job/outbox、Dramatiq、MinIO、Caddy、可选 Milvus 与可观测
+profiles。Alembic head 为 `0011_auth_role_hardening`；app、worker、admin 使用独立
+PostgreSQL 密钥，复合 tenant 外键和收窄授权阻止跨租户父子关系；Worker 必须用有效 job claim
+换取 run lease，dispatcher 可恢复 broker-loss、重试、过期 claim 和最终 dead letter。默认执行器明确为
+`synthetic_smoke`，只证明持久化与证据闸门，不冒充真实金融研究。
+
+验收边界：独立复审全量为 `401 passed, 1 skipped`，Phase 3/4/5 smoke eval
+回归通过；真实 `core` Compose 已完成 fresh 0011 migration、0010→0011 升级、
+head→0008→head 回滚往返、Mailpit 邀请接受、Redis/Dramatiq 研究完成、独立
+运行时角色、MinIO 预签名上传/校验/下载，以及同一 PostgreSQL 导出快照生成
+数据库 dump 与 ready 对象 key/size/hash 清单的加密备份和 5.0 秒隔离恢复演练。真实 Milvus/BGE
+仍为 `NOT EXECUTED`；每小时 RPO 只有安装计划任务后才成立。独立 subagent
+最终结论为 Phase 6 code + real core `PASS`（P0=0、P1=0）。详见
+[Phase 6 Verification](../reviews/phase-6-verification.md)。
+
+### Phase 7：真实 Milvus / BGE 检索门禁
+
+实现状态（2026-08-14）：本机已启动真实 Milvus Standalone 2.6.2，依赖使用
+独立 etcd 3.5.18 和 MinIO，gRPC/健康端口只绑定 `127.0.0.1`。宿主机使用
+`sentence-transformers 5.7.0` 加载固定 revision
+`BAAI/bge-large-zh-v1.5@79e7739b6ab944e86d6171e44d24c997fc1e0116`，生成
+1024 维归一化向量；本次 PyTorch 为 CPU build，因此真实设备记录为 CPU。
+
+真实门禁以 UUID collection 摄取 8 条中文合成评测语料，通过 Milvus BM25
+Function、dense AUTOINDEX/IP 和 RRF 执行 4 个查询。连续两轮
+Recall@3/MRR@3/NDCG@3 均为 `1.0`，首位命中全部正确；公司、访问作用域、
+embedding profile 和 index version 过滤通过，每轮只删除自己创建的 collection
+且删除结果已复核。环境开启的 PyMilvus lifecycle 与真实 BGE gate 共 `2 passed`；
+默认全量为 `403 passed, 2 skipped`，两个 skip 均是需要显式真实环境变量的集成门禁。
+独立 subagent 对抗审查通过（`P0=0`、`P1=0`），并在强制禁用客户端 fallback
+后再次证明原生 Milvus hybrid 路径可用、异常中断后临时 collection 仍被删除。
+
+边界：上述数据是小型合成检索集，只证明真实模型、真实 Milvus schema/function/
+index、过滤和清理链路可运行，不证明生产 Recall、容量、延迟或金融事实准确性；正式
+worker 仍为 `synthetic_smoke`，尚未切换到这条真实 RAG 链路。详见
+[Phase 7 Verification](../reviews/phase-7-verification.md)。
 
 ## 21. 面试展示主线
 
@@ -707,7 +756,7 @@ Memory 还需做消融：无记忆、仅短期、短期加长期，比较质量�
 11. 用户说“好的，谢谢”，系统只做智能社交回应，不再调用研究工具；
 12. 展示 trace、成本、评测分数和一次故障降级记录。
 
-面试时重点讲清楚取舍：为什么先模块化单体和 SQLite FTS5；为什么数据库而不是内存是事实源；为什么记忆要分层和验证；为什么模型工具与运行时内部能力必须隔离；以及何时才值得迁 PostgreSQL、向量检索或多 Agent。
+面试时重点讲清楚取舍：为什么保持模块化单体并把 SQLite/PostgreSQL 作为事实源；为什么 Milvus 只做可重建混合检索索引；为什么默认用 RRF 而不是主观权重；为什么记忆要分层和验证；以及为什么模型工具与运行时内部能力必须隔离。
 
 ## 22. README 最终结构
 
@@ -735,13 +784,13 @@ README 只写已经实现并验证的能力；本文件可以保留目标态和�
 |---|---|---|---|---|
 | 永久停止语义 | 六态内不支持永久取消 | 产品负责人 | Phase 1 前端接入前 | 停止按钮与取消 API |
 | 受限分类器启用阈值 | 首版关闭，仅规则+上下文 | Agent/评测负责人 | Phase 2 验收前 | 模糊意图 LLM fallback |
-| 各类数据 TTL/删除细则 | 本地 Demo 保留，支持手动清理 | 产品/安全负责人 | Phase 5 验收前 | 多用户记忆上线 |
-| FTS→embedding 量化门槛 | 仅 FTS5 | RAG/评测负责人 | Phase 4 验收前 | embeddings 与 reranker |
+| 长期记忆 TTL/作用域/删除 | ADR-0010 已确定；研究事实 90 天 | 产品/安全负责人 | 已决定 | Phase 5 实现与多用户记忆上线 |
+| 独立 reranker 启用门槛 | BGE Large zh v1.5（1024 维）已确定；reranker 默认关闭 | RAG/评测负责人 | Phase 4 验收前 | 线上质量与延迟 |
 
 ## 24. 参考资料
 
-- [SQLite FTS5 官方文档](https://www.sqlite.org/fts5.html)
-- [pgvector 官方仓库](https://github.com/pgvector/pgvector)
+- [Milvus BM25 Function](https://milvus.io/docs/bm25-function.md)
+- [Milvus Hybrid Search](https://milvus.io/docs/multi-vector-search.md)
 - [OpenAI Agents SDK Sessions](https://openai.github.io/openai-agents-python/sessions/)
 - [Anthropic：Agent Context Engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
 - [Anthropic：Evals for AI Agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)

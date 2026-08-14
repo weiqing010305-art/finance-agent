@@ -1,0 +1,26 @@
+[
+  {
+    "id": "exact_company_cashflow",
+    "query": "腾讯经营现金流",
+    "company": "腾讯",
+    "relevant": ["tx_cashflow"]
+  },
+  {
+    "id": "semantic_profit_quality",
+    "query": "盈利质量是否恶化",
+    "company": "腾讯",
+    "relevant": ["tx_profit_quality"]
+  },
+  {
+    "id": "accounting_term",
+    "query": "合同负债变化",
+    "company": "茅台",
+    "relevant": ["mt_contract_liability"]
+  },
+  {
+    "id": "symbol_and_period",
+    "query": "0700.HK 2024资本开支",
+    "company": "腾讯",
+    "relevant": ["tx_capex_2024"]
+  }
+]

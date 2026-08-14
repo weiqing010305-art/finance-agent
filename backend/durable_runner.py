@@ -50,6 +50,9 @@ class DurableRunner:
         *,
         owner_id: str,
         idempotency_key: str,
+        case_id: str | None = None,
+        intake_id: str | None = None,
+        initial_plan: dict | None = None,
     ) -> CreatedRun:
         if not owner_id.strip() or not idempotency_key.strip():
             raise ValueError("owner_id and idempotency_key are required")
@@ -59,6 +62,9 @@ class DurableRunner:
             idempotency_key=idempotency_key,
             lease_token=str(uuid4()),
             lease_expires_at=self._lease_expiry(),
+            case_id=case_id,
+            intake_id=intake_id,
+            initial_plan=initial_plan,
         )
         return CreatedRun(run=run, lease_token=token, created=created)
 
@@ -260,6 +266,8 @@ class DurableRunner:
         progress: int,
         budget_delta: int = 0,
         tool: dict | None = None,
+        capability_token: str | None = None,
+        tool_commit_token: str | None = None,
     ) -> dict:
         try:
             return self.repository.commit_step_atomic(
@@ -274,6 +282,16 @@ class DurableRunner:
                 progress=progress,
                 budget_delta=budget_delta,
                 tool=tool,
+                capability_token=capability_token,
+                tool_commit_token=tool_commit_token,
+            )
+        except (ValueError, PermissionError) as exc:
+            raise RunConflict(str(exc)) from exc
+
+    def install_plan(self, run_id: str, *, lease_token: str, plan: dict) -> dict:
+        try:
+            return self.repository.install_plan_atomic(
+                run_id, lease_token=lease_token, plan=plan
             )
         except (ValueError, PermissionError) as exc:
             raise RunConflict(str(exc)) from exc
@@ -292,6 +310,39 @@ class DurableRunner:
                 lease_token=lease_token,
                 result=result,
                 evidence=evidence,
+            )
+        except (ValueError, PermissionError) as exc:
+            raise RunConflict(str(exc)) from exc
+
+    def persist_verified_evidence(self, run_id: str, *, lease_token: str, evidence, claims) -> None:
+        try:
+            self.repository.persist_verified_evidence(
+                run_id, lease_token=lease_token, evidence=evidence, claims=claims
+            )
+        except (ValueError, PermissionError) as exc:
+            raise RunConflict(str(exc)) from exc
+
+    def persist_report_snapshot(
+        self, run_id: str, *, lease_token: str, generation_key: str,
+        model: str, schema_version: int, snapshot: dict,
+    ) -> dict:
+        try:
+            return self.repository.persist_report_snapshot_atomic(
+                run_id, lease_token=lease_token, generation_key=generation_key,
+                model=model, schema_version=schema_version, snapshot=snapshot,
+            )
+        except (ValueError, PermissionError) as exc:
+            raise RunConflict(str(exc)) from exc
+
+    def complete_verified_report(
+        self, run_id: str, *, lease_token: str, generation_key: str,
+        markdown: str, report_json: dict, citations: list[dict], degraded: bool,
+    ) -> dict:
+        try:
+            return self.repository.complete_verified_report_atomic(
+                run_id, lease_token=lease_token, generation_key=generation_key,
+                markdown=markdown, report_json=report_json, citations=citations,
+                degraded=degraded,
             )
         except (ValueError, PermissionError) as exc:
             raise RunConflict(str(exc)) from exc

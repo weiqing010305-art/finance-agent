@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import sqlite3
 
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 13
 
 
 def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
@@ -492,6 +492,440 @@ def _add_research_intake_schema(connection: sqlite3.Connection) -> None:
     )
 
 
+def _add_tool_execution_ledger(connection: sqlite3.Connection) -> None:
+    for column, definition in (
+        ("capability_token_hash", "TEXT"),
+        ("status", "TEXT NOT NULL DEFAULT 'recorded'"),
+        ("effective_cost", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if not _column_exists(connection, "execution_authorizations", column):
+            connection.execute(
+                f"ALTER TABLE execution_authorizations ADD COLUMN {column} {definition}"
+            )
+    _execute_statements(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS tool_execution_claims (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            plan_version INTEGER NOT NULL,
+            step_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            authorization_id TEXT NOT NULL REFERENCES execution_authorizations(id),
+            execution_token_hash TEXT NOT NULL,
+            lease_token_hash TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('claimed','observed','committed','failed')),
+            input_json TEXT NOT NULL,
+            output_json TEXT,
+            error TEXT,
+            duration_ms INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(run_id, plan_version, step_id),
+            UNIQUE(run_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tool_execution_claims_run
+            ON tool_execution_claims(run_id, status, plan_version);
+        """,
+    )
+
+
+def _add_authorization_attempt_history(connection: sqlite3.Connection) -> None:
+    _execute_statements(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS execution_authorization_attempts (
+            id TEXT PRIMARY KEY,
+            authorization_id TEXT NOT NULL REFERENCES execution_authorizations(id) ON DELETE CASCADE,
+            decision TEXT NOT NULL CHECK(decision IN ('allow','deny')),
+            reason_codes_json TEXT NOT NULL,
+            effective_cost INTEGER NOT NULL,
+            budget_before INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_authorization_attempts_auth
+            ON execution_authorization_attempts(authorization_id, created_at);
+        """,
+    )
+
+
+def _add_phase4_rag_schema(connection: sqlite3.Connection) -> None:
+    _execute_statements(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS documents (
+            id TEXT PRIMARY KEY,
+            source_uri TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            publisher TEXT NOT NULL,
+            access_scope TEXT NOT NULL CHECK(length(access_scope) > 0),
+            company TEXT,
+            symbol TEXT,
+            market TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(source_uri, access_scope)
+        );
+        CREATE TABLE IF NOT EXISTS document_versions (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+            source_version TEXT,
+            mime_type TEXT NOT NULL,
+            byte_size INTEGER NOT NULL CHECK(byte_size > 0),
+            published_at TEXT,
+            fetched_at TEXT NOT NULL,
+            normalized_text TEXT NOT NULL CHECK(length(normalized_text) > 0),
+            created_at TEXT NOT NULL,
+            UNIQUE(document_id, content_sha256)
+        );
+        CREATE TABLE IF NOT EXISTS document_chunks (
+            id TEXT PRIMARY KEY,
+            document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+            section TEXT,
+            page INTEGER CHECK(page IS NULL OR page > 0),
+            text TEXT NOT NULL CHECK(length(text) > 0),
+            content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+            char_start INTEGER NOT NULL CHECK(char_start >= 0),
+            char_end INTEGER NOT NULL CHECK(char_end > char_start),
+            created_at TEXT NOT NULL,
+            UNIQUE(document_version_id, ordinal),
+            UNIQUE(document_version_id, content_sha256, char_start)
+        );
+        CREATE TABLE IF NOT EXISTS ingestion_jobs (
+            id TEXT PRIMARY KEY,
+            document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+            embedding_profile_id TEXT NOT NULL,
+            index_version TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','indexing','indexed','failed')),
+            attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt >= 0),
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(document_version_id, embedding_profile_id, index_version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status
+            ON ingestion_jobs(status, updated_at);
+        CREATE TABLE IF NOT EXISTS evidence_items (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            document_version_id TEXT REFERENCES document_versions(id),
+            chunk_id TEXT REFERENCES document_chunks(id),
+            source_uri TEXT NOT NULL,
+            title TEXT NOT NULL,
+            publisher TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            excerpt TEXT NOT NULL CHECK(length(excerpt) > 0),
+            content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+            access_scope TEXT NOT NULL,
+            authority_tier INTEGER NOT NULL CHECK(authority_tier BETWEEN 0 AND 5),
+            published_at TEXT,
+            retrieved_at TEXT NOT NULL,
+            page INTEGER CHECK(page IS NULL OR page > 0),
+            section TEXT,
+            company TEXT,
+            period TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, content_sha256, source_uri)
+        );
+        CREATE TABLE IF NOT EXISTS claims (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            text TEXT NOT NULL CHECK(length(text) > 0),
+            content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+            status TEXT NOT NULL CHECK(status IN ('supported','partially_supported','unsupported','conflicted')),
+            confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+            period TEXT,
+            unit TEXT,
+            currency TEXT,
+            reason_codes_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, content_sha256)
+        );
+        CREATE TABLE IF NOT EXISTS claim_evidence (
+            claim_id TEXT NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+            evidence_id TEXT NOT NULL REFERENCES evidence_items(id) ON DELETE CASCADE,
+            relation TEXT NOT NULL CHECK(relation IN ('supports','partially_supports','conflicts')),
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(claim_id, evidence_id)
+        );
+        CREATE TABLE IF NOT EXISTS report_generations (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            generation_key TEXT NOT NULL,
+            model TEXT NOT NULL,
+            schema_version INTEGER NOT NULL CHECK(schema_version > 0),
+            status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(run_id, generation_key)
+        );
+        CREATE TABLE IF NOT EXISTS report_snapshots (
+            id TEXT PRIMARY KEY,
+            generation_id TEXT NOT NULL REFERENCES report_generations(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL CHECK(sequence >= 0),
+            snapshot_json TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+            created_at TEXT NOT NULL,
+            UNIQUE(generation_id, sequence)
+        );
+        CREATE TABLE IF NOT EXISTS reports (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+            generation_id TEXT NOT NULL REFERENCES report_generations(id),
+            markdown TEXT NOT NULL,
+            report_json TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+            degraded INTEGER NOT NULL DEFAULT 0 CHECK(degraded IN (0,1)),
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS report_citations (
+            report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+            citation_number INTEGER NOT NULL CHECK(citation_number > 0),
+            claim_id TEXT NOT NULL REFERENCES claims(id),
+            evidence_id TEXT NOT NULL REFERENCES evidence_items(id),
+            PRIMARY KEY(report_id, citation_number),
+            UNIQUE(report_id, claim_id, evidence_id)
+        );
+        """,
+    )
+
+
+def _add_ingestion_claim_fencing(connection: sqlite3.Connection) -> None:
+    for column, definition in (
+        ("claim_token_hash", "TEXT"),
+        ("claim_expires_at", "TEXT"),
+    ):
+        if not _column_exists(connection, "ingestion_jobs", column):
+            connection.execute(
+                f"ALTER TABLE ingestion_jobs ADD COLUMN {column} {definition}"
+            )
+
+
+def _add_long_term_memory_schema(connection: sqlite3.Connection) -> None:
+    required = {
+        "memory_records": {"id", "scope_hash", "memory_key", "tombstoned"},
+        "memory_versions": {"id", "memory_id", "status", "content_sha256", "expires_at"},
+        "memory_write_requests": {"idempotency_key", "memory_version_id"},
+        "memory_evidence": {"memory_version_id", "evidence_id", "claim_id"},
+        "memory_events": {"memory_id", "kind", "reason_code"},
+        "memory_deletion_jobs": {"id", "scope_hash", "status", "claim_token_hash"},
+    }
+    existing = {name for name in required if _table_exists(connection, name)}
+    if existing:
+        if existing != set(required):
+            raise sqlite3.OperationalError("incomplete long-term memory schema")
+        for table, columns in required.items():
+            actual = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if not columns <= actual:
+                raise sqlite3.OperationalError(f"malformed long-term memory table: {table}")
+        return
+    _execute_statements(
+        connection,
+        """
+        CREATE TABLE memory_records (
+            id TEXT PRIMARY KEY,
+            memory_key TEXT NOT NULL CHECK(length(memory_key) > 0),
+            memory_type TEXT NOT NULL CHECK(memory_type IN (
+                'company_fact','entity_identity','user_preference',
+                'case_summary','task_experience'
+            )),
+            scope_kind TEXT NOT NULL CHECK(scope_kind IN ('public_company','user','case','system')),
+            scope_hash TEXT NOT NULL CHECK(length(scope_hash) = 64),
+            tenant_id TEXT NOT NULL CHECK(length(tenant_id) > 0),
+            user_id TEXT,
+            case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
+            company TEXT,
+            symbol TEXT,
+            market TEXT,
+            tombstoned INTEGER NOT NULL DEFAULT 0 CHECK(tombstoned IN (0,1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(scope_hash, memory_key)
+        );
+        CREATE INDEX idx_memory_records_scope
+            ON memory_records(scope_hash, memory_type, tombstoned);
+
+        CREATE TABLE memory_versions (
+            id TEXT PRIMARY KEY,
+            memory_id TEXT NOT NULL REFERENCES memory_records(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL CHECK(version > 0),
+            status TEXT NOT NULL CHECK(status IN (
+                'candidate','verified','active','conflicted','rejected',
+                'superseded','expired','deleted'
+            )),
+            content_json TEXT NOT NULL,
+            content_text TEXT NOT NULL CHECK(length(content_text) > 0),
+            content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+            request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint) = 64),
+            idempotency_key TEXT NOT NULL CHECK(length(idempotency_key) > 0),
+            confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+            period TEXT,
+            source_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+            source_summary_id TEXT REFERENCES case_summaries(id) ON DELETE SET NULL,
+            supersedes_version_id TEXT REFERENCES memory_versions(id),
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(memory_id, version),
+            UNIQUE(idempotency_key)
+        );
+        CREATE UNIQUE INDEX idx_memory_one_active_version
+            ON memory_versions(memory_id) WHERE status = 'active';
+        CREATE INDEX idx_memory_versions_read
+            ON memory_versions(memory_id, status, expires_at);
+
+        CREATE TABLE memory_write_requests (
+            idempotency_key TEXT PRIMARY KEY,
+            request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint) = 64),
+            memory_version_id TEXT NOT NULL REFERENCES memory_versions(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE memory_evidence (
+            memory_version_id TEXT NOT NULL REFERENCES memory_versions(id) ON DELETE CASCADE,
+            evidence_id TEXT NOT NULL REFERENCES evidence_items(id) ON DELETE RESTRICT,
+            claim_id TEXT NOT NULL REFERENCES claims(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(memory_version_id, evidence_id, claim_id)
+        );
+
+        CREATE TABLE memory_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id TEXT NOT NULL REFERENCES memory_records(id) ON DELETE CASCADE,
+            memory_version_id TEXT REFERENCES memory_versions(id) ON DELETE SET NULL,
+            kind TEXT NOT NULL CHECK(length(kind) > 0),
+            reason_code TEXT NOT NULL CHECK(length(reason_code) > 0),
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_memory_events_record ON memory_events(memory_id, id);
+
+        CREATE TABLE memory_deletion_jobs (
+            id TEXT PRIMARY KEY,
+            memory_id TEXT REFERENCES memory_records(id) ON DELETE SET NULL,
+            scope_hash TEXT NOT NULL CHECK(length(scope_hash) = 64),
+            status TEXT NOT NULL CHECK(status IN ('pending','claimed','completed','failed')),
+            idempotency_key TEXT NOT NULL UNIQUE,
+            claim_token_hash TEXT,
+            claim_expires_at TEXT,
+            attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt >= 0),
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_memory_deletion_jobs_status
+            ON memory_deletion_jobs(status, updated_at);
+
+        """,
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER validate_memory_version_edge
+        BEFORE UPDATE OF status ON memory_versions
+        WHEN NEW.status != OLD.status AND NOT (
+            (OLD.status = 'candidate' AND NEW.status IN ('verified','rejected','conflicted','deleted')) OR
+            (OLD.status = 'verified' AND NEW.status IN ('active','rejected','conflicted','deleted')) OR
+            (OLD.status = 'active' AND NEW.status IN ('superseded','conflicted','expired','deleted')) OR
+            (OLD.status = 'conflicted' AND NEW.status IN ('active','rejected','superseded','expired','deleted')) OR
+            (OLD.status IN ('rejected','superseded','expired') AND NEW.status = 'deleted')
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'illegal memory version transition');
+        END
+        """
+    )
+
+
+def _add_memory_activation_guards(connection: sqlite3.Connection) -> None:
+    if _table_exists(connection, "memory_activation_authorizations"):
+        actual = {
+            row[1] for row in connection.execute(
+                "PRAGMA table_info(memory_activation_authorizations)"
+            )
+        }
+        if not {"memory_version_id", "authorization_kind", "source_fingerprint", "created_at"} <= actual:
+            raise sqlite3.OperationalError("malformed memory activation authorization table")
+    else:
+        connection.execute(
+            """
+            CREATE TABLE memory_activation_authorizations (
+                memory_version_id TEXT PRIMARY KEY REFERENCES memory_versions(id) ON DELETE CASCADE,
+                authorization_kind TEXT NOT NULL CHECK(authorization_kind IN (
+                    'verified_evidence','explicit_user_confirmation','persisted_summary','completed_run'
+                )),
+                source_fingerprint TEXT NOT NULL CHECK(length(source_fingerprint) = 64),
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS validate_memory_version_initial_status
+        BEFORE INSERT ON memory_versions
+        WHEN NEW.status != 'candidate'
+        BEGIN
+            SELECT RAISE(ABORT, 'memory version must start as candidate');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS validate_memory_version_activation_authorized
+        BEFORE UPDATE OF status ON memory_versions
+        WHEN NEW.status = 'active' AND OLD.status != 'active' AND NOT EXISTS (
+            SELECT 1 FROM memory_activation_authorizations a
+            WHERE a.memory_version_id = NEW.id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'memory activation requires authorization ledger');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS validate_company_fact_activation_evidence
+        BEFORE UPDATE OF status ON memory_versions
+        WHEN NEW.status = 'active'
+          AND (SELECT memory_type FROM memory_records WHERE id=NEW.memory_id) = 'company_fact'
+          AND NOT EXISTS (
+              SELECT 1 FROM memory_evidence me
+              WHERE me.memory_version_id=NEW.id
+          )
+        BEGIN
+            SELECT RAISE(ABORT, 'company fact activation requires evidence links');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS validate_memory_version_content_immutable
+        BEFORE UPDATE OF content_json, content_text, content_sha256, request_fingerprint,
+                         idempotency_key, memory_id, version, source_run_id,
+                         source_summary_id, confidence, period, supersedes_version_id
+                         ON memory_versions
+        WHEN NEW.content_json IS NOT OLD.content_json
+          OR NEW.content_text IS NOT OLD.content_text
+          OR NEW.content_sha256 IS NOT OLD.content_sha256
+          OR NEW.request_fingerprint IS NOT OLD.request_fingerprint
+          OR NEW.idempotency_key IS NOT OLD.idempotency_key
+          OR NEW.memory_id IS NOT OLD.memory_id
+          OR NEW.source_run_id IS NOT OLD.source_run_id
+          OR NEW.source_summary_id IS NOT OLD.source_summary_id
+          OR NEW.confidence != OLD.confidence
+          OR NEW.period IS NOT OLD.period
+          OR NEW.supersedes_version_id IS NOT OLD.supersedes_version_id
+          OR NEW.version != OLD.version
+        BEGIN
+            SELECT RAISE(ABORT, 'memory version identity is immutable');
+        END
+        """
+    )
+
+
 def migrate(connection: sqlite3.Connection) -> None:
     connection.execute("BEGIN IMMEDIATE")
     try:
@@ -505,6 +939,10 @@ def migrate(connection: sqlite3.Connection) -> None:
         )
         row = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
         current = int(row[0] or 0)
+        if current > LATEST_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"database schema version {current} is newer than supported {LATEST_SCHEMA_VERSION}"
+            )
         if current < 1:
             if _table_exists(connection, "tasks") and not _table_exists(connection, "agent_runs"):
                 _upgrade_legacy_schema(connection)
@@ -539,6 +977,30 @@ def migrate(connection: sqlite3.Connection) -> None:
         if current < 7:
             _add_research_intake_schema(connection)
             connection.execute("INSERT INTO schema_migrations(version) VALUES (7)")
+            current = 7
+        if current < 8:
+            _add_tool_execution_ledger(connection)
+            connection.execute("INSERT INTO schema_migrations(version) VALUES (8)")
+            current = 8
+        if current < 9:
+            _add_authorization_attempt_history(connection)
+            connection.execute("INSERT INTO schema_migrations(version) VALUES (9)")
+            current = 9
+        if current < 10:
+            _add_phase4_rag_schema(connection)
+            connection.execute("INSERT INTO schema_migrations(version) VALUES (10)")
+            current = 10
+        if current < 11:
+            _add_ingestion_claim_fencing(connection)
+            connection.execute("INSERT INTO schema_migrations(version) VALUES (11)")
+            current = 11
+        if current < 12:
+            _add_long_term_memory_schema(connection)
+            connection.execute("INSERT INTO schema_migrations(version) VALUES (12)")
+            current = 12
+        if current < 13:
+            _add_memory_activation_guards(connection)
+            connection.execute("INSERT INTO schema_migrations(version) VALUES (13)")
         connection.commit()
     except Exception:
         connection.rollback()

@@ -29,7 +29,7 @@ LangGraph 负责编排上述节点和条件边。Repository 是 intake、确认�
 - `ResearchIntakeRepository`：持久化请求身份、路由事实、候选实体、确认状态和最终 run。
 - `Planner`：根据问题和研究深度生成 DAG；统一验证唯一 ID、依赖存在、无环、预算和最大重试。
 - `PolicyGate`：要求研究路由、实体已确认、工具已注册、风险允许、预算充足。
-- `ToolRegistry`：保存版本化 ToolSpec 与 handler；拒绝未注册工具和 Schema 异常。
+- `ToolRegistry`：保存版本化 ToolSpec 与 handler；拒绝未注册工具和 Schema 异常。`retrieve_documents` 的输出必须标记 sparse/dense/fused 分数、融合策略、索引与 embedding 版本；Phase 3 使用 fake adapter，Phase 4 接入 Milvus BM25+dense+RRF。
 - `ResearchExecutor`：计算 frontier，运行无依赖步骤，逐个原子提交；观察不足时最多重规划一次。
 - `ResearchOrchestrationGraph`：把 intake、resolve、confirm、plan、authorize 和 execute 串成显式节点。
 

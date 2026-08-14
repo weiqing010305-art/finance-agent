@@ -1,0 +1,268 @@
+name: finscope-local
+
+services:
+  postgres:
+    profiles: [core]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: finscope
+      POSTGRES_USER: finscope_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+    secrets: [postgres_admin_password, postgres_app_password, postgres_worker_password]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    configs:
+      - source: postgres_init_roles
+        target: /docker-entrypoint-initdb.d/10-roles.sh
+      - source: postgres_backup_snapshot
+        target: /ops/postgres_backup_snapshot.sh
+        mode: 0555
+    healthcheck: {test: [CMD-SHELL, "pg_isready -U finscope_admin -d finscope"], interval: 5s, timeout: 3s, retries: 20}
+    networks: [backend]
+  redis:
+    profiles: [core]
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, "yes"]
+    volumes: [redis_data:/data]
+    healthcheck: {test: [CMD, redis-cli, ping], interval: 5s, timeout: 3s, retries: 20}
+    networks: [backend]
+  minio:
+    profiles: [core]
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_secret_key
+    secrets: [minio_root_access_key, minio_root_secret_key]
+    volumes: [minio_data:/data]
+    healthcheck: {test: [CMD-SHELL, "curl -fsS http://localhost:9000/minio/health/live || exit 1"], interval: 5s, timeout: 3s, retries: 20}
+    networks: [backend]
+  minio-init:
+    profiles: [core]
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    entrypoint: [/bin/sh, -c]
+    command:
+      - >-
+        mc alias set local http://minio:9000 "$$(cat /run/secrets/minio_root_access_key)" "$$(cat /run/secrets/minio_root_secret_key)" &&
+        mc mb --ignore-existing local/finscope-private &&
+        mc admin user add local "$$(cat /run/secrets/minio_app_access_key)" "$$(cat /run/secrets/minio_app_secret_key)" &&
+        mc admin policy attach local readwrite --user "$$(cat /run/secrets/minio_app_access_key)" &&
+        mc admin user add local "$$(cat /run/secrets/minio_worker_access_key)" "$$(cat /run/secrets/minio_worker_secret_key)" &&
+        mc admin policy attach local readwrite --user "$$(cat /run/secrets/minio_worker_access_key)"
+    secrets: [minio_root_access_key, minio_root_secret_key, minio_app_access_key, minio_app_secret_key, minio_worker_access_key, minio_worker_secret_key]
+    configs:
+      - source: minio_backup_script
+        target: /ops/minio_backup.sh
+        mode: 0555
+    depends_on:
+      minio: {condition: service_healthy}
+    networks: [backend]
+  mailpit:
+    profiles: [core]
+    image: axllent/mailpit:v1.27
+    ports: [127.0.0.1:8025:8025]
+    networks: [backend, edge]
+  api:
+    profiles: [core]
+    build: .
+    environment:
+      FINSCOPE_RUNTIME_MODE: local
+      DATABASE_ROLE: finscope_app
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_app_password
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: https://localhost:9443
+      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_app_access_key
+      MINIO_SECRET_KEY_FILE: /run/secrets/minio_app_secret_key
+      JWT_SIGNING_KEY_FILE: /run/secrets/jwt_signing_key
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      FINSCOPE_FORMAL_EXECUTOR: synthetic_smoke
+    secrets: [postgres_app_password, minio_app_access_key, minio_app_secret_key, jwt_signing_key]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    command: [python, scripts/container_entrypoint.py, uvicorn, backend.formal_app:create_formal_app, --factory, --host, 0.0.0.0, --port, "8000", --proxy-headers, --forwarded-allow-ips, "*"]
+    networks: [backend, egress]
+  worker:
+    profiles: [core]
+    build: .
+    command: [python, scripts/container_entrypoint.py, dramatiq, backend.jobs.worker, --processes, "1", --threads, "4"]
+    environment:
+      FINSCOPE_RUNTIME_MODE: local
+      DATABASE_ROLE: finscope_worker
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_worker_password
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_worker_access_key
+      MINIO_SECRET_KEY_FILE: /run/secrets/minio_worker_secret_key
+      JWT_SIGNING_KEY_FILE: /run/secrets/jwt_signing_key
+      FINSCOPE_FORMAL_EXECUTOR: synthetic_smoke
+    secrets: [postgres_worker_password, minio_worker_access_key, minio_worker_secret_key, jwt_signing_key]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    networks: [backend, egress]
+  dispatcher:
+    profiles: [core]
+    build: .
+    command: [python, scripts/container_entrypoint.py, python, -m, scripts.reconcile_jobs]
+    environment:
+      FINSCOPE_RUNTIME_MODE: local
+      FINSCOPE_FORMAL_EXECUTOR: synthetic_smoke
+      DATABASE_ROLE: finscope_worker
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_worker_password
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_worker_access_key
+      MINIO_SECRET_KEY_FILE: /run/secrets/minio_worker_secret_key
+      JWT_SIGNING_KEY_FILE: /run/secrets/jwt_signing_key
+      JOB_DISPATCH_INTERVAL_SECONDS: "5"
+    secrets: [postgres_worker_password, minio_worker_access_key, minio_worker_secret_key, jwt_signing_key]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    networks: [backend]
+  migrate:
+    profiles: [core]
+    build: .
+    command: [python, scripts/container_entrypoint.py, python, -m, scripts.migrate_formal]
+    environment:
+      DATABASE_ROLE: finscope_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+      POSTGRES_APP_PASSWORD_FILE: /run/secrets/postgres_app_password
+      POSTGRES_WORKER_PASSWORD_FILE: /run/secrets/postgres_worker_password
+      JWT_SIGNING_KEY_FILE: /run/secrets/jwt_signing_key
+    secrets: [postgres_admin_password, postgres_app_password, postgres_worker_password, jwt_signing_key]
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [backend]
+  caddy:
+    profiles: [core]
+    image: caddy:2.10-alpine
+    ports: [127.0.0.1:8443:443, 127.0.0.1:9443:9443]
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./prototype-research-ui:/srv:ro
+      - caddy_data:/data
+    depends_on: [api]
+    networks: [backend, edge]
+  milvus-etcd:
+    profiles: [rag]
+    image: quay.io/coreos/etcd:v3.5.18
+    command:
+      - etcd
+      - -advertise-client-urls=http://milvus-etcd:2379
+      - -listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    healthcheck:
+      test: [CMD, etcdctl, endpoint, health]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes: [milvus_etcd_data:/etcd]
+    networks: [backend]
+  milvus-minio:
+    profiles: [rag]
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: [minio, server, /minio_data]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/milvus_minio_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/milvus_minio_secret_key
+    secrets: [milvus_minio_access_key, milvus_minio_secret_key]
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:9000/minio/health/live]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes: [milvus_object_data:/minio_data]
+    networks: [backend]
+  milvus:
+    profiles: [rag]
+    image: milvusdb/milvus:v2.6.2
+    entrypoint: [/bin/sh, -c]
+    command:
+      - >-
+        export MINIO_ACCESS_KEY_ID="$$(cat /run/secrets/milvus_minio_access_key)";
+        export MINIO_SECRET_ACCESS_KEY="$$(cat /run/secrets/milvus_minio_secret_key)";
+        exec milvus run standalone
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+      MQ_TYPE: woodpecker
+    secrets: [milvus_minio_access_key, milvus_minio_secret_key]
+    security_opt: [seccomp:unconfined]
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:9091/healthz]
+      interval: 10s
+      start_period: 30s
+      timeout: 5s
+      retries: 12
+    ports: [127.0.0.1:19530:19530, 127.0.0.1:9091:9091]
+    depends_on:
+      milvus-etcd: {condition: service_healthy}
+      milvus-minio: {condition: service_healthy}
+    volumes: [milvus_data:/var/lib/milvus]
+    networks: [backend, edge]
+  otel-collector:
+    profiles: [observability]
+    image: otel/opentelemetry-collector-contrib:0.134.0
+    command: [--config=/etc/otelcol/config.yaml]
+    volumes: [./infra/otel/collector.yaml:/etc/otelcol/config.yaml:ro]
+    networks: [backend]
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.5.0
+    command: [--config.file=/etc/prometheus/prometheus.yml]
+    volumes: [./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro]
+    networks: [backend]
+  loki:
+    profiles: [observability]
+    image: grafana/loki:3.5.3
+    command: [-config.file=/etc/loki/config.yaml]
+    volumes: [./infra/loki/config.yaml:/etc/loki/config.yaml:ro]
+    networks: [backend]
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:12.1.0
+    ports: [127.0.0.1:3000:3000]
+    volumes: [./infra/grafana/provisioning:/etc/grafana/provisioning:ro]
+    networks: [backend]
+
+networks:
+  backend: {internal: true}
+  edge: {}
+  egress: {}
+volumes:
+  postgres_data: {}
+  redis_data: {}
+  minio_data: {}
+  milvus_etcd_data: {}
+  milvus_object_data: {}
+  milvus_data: {}
+  caddy_data: {}
+secrets:
+  postgres_admin_password: {file: ./secrets/postgres_admin_password}
+  postgres_app_password: {file: ./secrets/postgres_app_password}
+  postgres_worker_password: {file: ./secrets/postgres_worker_password}
+  minio_root_access_key: {file: ./secrets/minio_root_access_key}
+  minio_root_secret_key: {file: ./secrets/minio_root_secret_key}
+  minio_app_access_key: {file: ./secrets/minio_app_access_key}
+  minio_app_secret_key: {file: ./secrets/minio_app_secret_key}
+  minio_worker_access_key: {file: ./secrets/minio_worker_access_key}
+  minio_worker_secret_key: {file: ./secrets/minio_worker_secret_key}
+  milvus_minio_access_key: {file: ./secrets/milvus_minio_access_key}
+  milvus_minio_secret_key: {file: ./secrets/milvus_minio_secret_key}
+  jwt_signing_key: {file: ./secrets/jwt_signing_key}
+configs:
+  postgres_init_roles:
+    file: ./infra/postgres/init-roles.sh
+  minio_backup_script:
+    file: ./scripts/minio_backup.sh
+  postgres_backup_snapshot:
+    file: ./scripts/postgres_backup_snapshot.sh

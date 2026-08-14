@@ -1,0 +1,19 @@
+{
+  "index_version": "phase7-real-v1",
+  "corpus": [
+    {"chunk_id":"tencent-cash","company":"腾讯","text":"腾讯控股年报显示，经营活动产生的现金流量净额同比增长，主要受高毛利业务及回款改善推动。","title":"腾讯现金流摘要","access_scope":"public"},
+    {"chunk_id":"tencent-games","company":"腾讯","text":"腾讯本土市场游戏收入恢复增长，长青游戏与新游戏共同贡献流水。","title":"腾讯游戏业务摘要","access_scope":"public"},
+    {"chunk_id":"tencent-ads","company":"腾讯","text":"腾讯营销服务收入受视频号广告需求和机器学习广告平台升级带动。","title":"腾讯广告业务摘要","access_scope":"public"},
+    {"chunk_id":"tencent-private","company":"腾讯","text":"内部未公开材料包含腾讯下一年度并购计划。","title":"私有材料","access_scope":"tenant-private"},
+    {"chunk_id":"moutai-cash","company":"贵州茅台","text":"贵州茅台经营活动现金流保持充裕，合同负债与销售回款反映渠道需求。","title":"茅台现金流摘要","access_scope":"public"},
+    {"chunk_id":"moutai-direct","company":"贵州茅台","text":"贵州茅台直销渠道收入增长，i茅台数字渠道提升直销占比。","title":"茅台直销摘要","access_scope":"public"},
+    {"chunk_id":"moutai-brand","company":"贵州茅台","text":"贵州茅台核心产品具备品牌稀缺性，高端白酒业务维持较强定价能力。","title":"茅台品牌摘要","access_scope":"public"},
+    {"chunk_id":"alibaba-commerce","company":"阿里巴巴","text":"阿里巴巴电商业务聚焦用户体验、价格竞争力和平台生态投入。","title":"阿里电商摘要","access_scope":"public"}
+  ],
+  "queries": [
+    {"query":"经营现金流改善情况","company":"腾讯","relevant":["tencent-cash"]},
+    {"query":"本土游戏收入表现","company":"腾讯","relevant":["tencent-games"]},
+    {"query":"直销渠道和数字平台收入","company":"贵州茅台","relevant":["moutai-direct"]},
+    {"query":"高端白酒品牌定价能力","company":"贵州茅台","relevant":["moutai-brand"]}
+  ]
+}
