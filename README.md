@@ -105,6 +105,34 @@ $env:FINSCOPE_B_TENANT = "<tenant-b>"
 .\.venv\Scripts\python.exe -m scripts.verify_formal_evidence_isolation
 ```
 
+## Live DeepSeek web search (legacy prototype)
+
+The original FastAPI prototype (`backend/app.py`) supports live DeepSeek web
+search through the Responses API `web_search` tool. This is the migration-era
+capability — the model searches directly rather than through the governed Tool
+Registry — but it exercises the real Deep Research loop end to end.
+
+Enable it in `backend/.env`:
+
+```
+FINSCOPE_RESEARCH_MODE=deepseek
+DEEPSEEK_API_KEY=sk-xxxx
+DEEPSEEK_MODEL=deepseek-v4-flash
+```
+
+Verify the whole loop with one command:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.verify_deepseek_research
+```
+
+Or start the prototype API (localhost:8770) and open
+`prototype-research-ui/unified-agents.html`:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.app:app --port 8770
+```
+
 ## Architecture and evidence
 
 - [Durable agent architecture](docs/architecture/durable-research-agent.md)
