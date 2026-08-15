@@ -108,3 +108,34 @@ def test_real_rag_processor_rejects_low_authority_before_persistence():
     else:
         raise AssertionError("low-authority evidence was accepted")
     assert durable.get_run(principal, created.run_id)["status"] == "failed"
+
+
+def test_real_rag_processor_bibliography_resolves_title_publisher_and_url():
+    engine, principal = _runtime()
+    durable, artifacts = PostgresDurableRepository(engine), PostgresResearchArtifacts(engine)
+    retriever = FakeAuthorizedRetriever()
+    created = durable.create_run(
+        principal, company="腾讯控股", question="分析腾讯现金流",
+        idempotency_key="bibliography-real-rag",
+        plan={"execution_profile": "real_rag_local", "steps": [{
+            "id": "retrieve_documents", "input": {"question": "现金流", "top_k": 5},
+        }]}, owner_id="api", enqueue_kind="real_rag_local_research",
+    )
+    processor = FormalRealRagProcessor(
+        durable, artifacts, retriever,
+        embedding_profile_id="emb-test", index_version="formal-fixture-v1",
+    )
+    executor = PersistedJobExecutor(
+        resolver=WorkerJobContextResolver(engine), ledger=JobLedger(engine), durable=durable,
+        handlers={"real_rag_local_research": processor}, owner_id="worker:test",
+    )
+    executor(created.job_id)
+    bibliography = artifacts.get_evidence(principal, created.run_id)
+    assert bibliography["run_id"] == created.run_id
+    assert len(bibliography["sources"]) == 1
+    source = bibliography["sources"][0]
+    assert source["title"] == "本地夹具"
+    assert source["publisher"] == "curated fixture"
+    assert source["url"] == "https://fixture.invalid/tencent"
+    assert source["authority_tier"] == 2
+    assert source["claims"][0]["status"] == "supported"

@@ -211,6 +211,8 @@ evidence_items_pg = Table(
     Column("content_hash", String(64), nullable=False),
     Column("excerpt", Text, nullable=False),
     Column("source_uri", Text, nullable=False),
+    Column("source_title", Text, nullable=True),
+    Column("publisher", Text, nullable=True),
     Column("authority_tier", Integer, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     CheckConstraint("authority_tier BETWEEN 0 AND 5", name="ck_evidence_pg_authority"),

@@ -69,9 +69,19 @@ $env:FINSCOPE_SMOKE_TENANT = "<tenant-id>"
 - The application collection is persistent and is not deleted by the gate; the
   administrative delete command is restricted to fixture document versions.
 - Milvus is a rebuildable index, not an authorization or audit source.
-- The database citation chain is complete, but the formal API does not yet
-  expose a user-facing bibliography/evidence endpoint that resolves citation
-  IDs to source titles and URLs.
-- The isolation gate exercises worker-role RLS and retrieval scope directly;
-  a two-account, end-to-end API isolation demo remains a later presentation
-  improvement.
+
+## Follow-up: bibliography endpoint and two-account isolation (2026-08-15)
+
+Two previously open Phase 8 items are now resolved:
+
+- `GET /api/research/{run_id}/evidence` resolves each persisted evidence item to
+  its source title, URL, publisher, excerpt, authority tier and supporting
+  claims, through the same PostgreSQL/RLS read boundary as the report. Titles and
+  publishers are persisted by Alembic `0013_evidence_bibliography` and populated
+  by both the synthetic smoke and real RAG processors.
+- `scripts/verify_formal_evidence_isolation.py` demonstrates two-account,
+  end-to-end API isolation over real HTTP: the owning tenant reads its run and
+  evidence while a second tenant receives `404` for both. A SQLite
+  TestClient-based isolation test runs in CI without external services.
+
+Full pytest: `425 passed, 3 skipped` (five new tests).

@@ -53,6 +53,11 @@ The first run downloads the pinned BGE model into a persistent Docker volume.
 Repeated seeding verifies the same content identity and is idempotent; changed
 content or authority under an existing chunk ID is rejected.
 
+A completed run exposes its evidence as a bibliography through
+`GET /api/research/{run_id}/evidence`, resolving each citation to its source
+title, URL, publisher and excerpt. Two-account end-to-end isolation is verified
+with `scripts/verify_formal_evidence_isolation.py` (see below).
+
 Create an encrypted PostgreSQL + MinIO backup and run an isolated restore drill:
 
 ```powershell
@@ -87,6 +92,17 @@ test collection and never touches the application collection):
 .\.venv\Scripts\python.exe -m pip install -r requirements-rag.txt
 docker compose --profile rag up -d milvus-etcd milvus-minio milvus
 .\.venv\Scripts\python.exe -m scripts.verify_real_rag
+```
+
+Verify two-account end-to-end API isolation (owner reads, the other tenant gets
+`404`) with credentials for two bootstrap-created tenants:
+
+```powershell
+$env:FINSCOPE_A_EMAIL = "a@example.com"; $env:FINSCOPE_A_PASSWORD = "..."
+$env:FINSCOPE_A_TENANT = "<tenant-a>"
+$env:FINSCOPE_B_EMAIL = "b@example.com"; $env:FINSCOPE_B_PASSWORD = "..."
+$env:FINSCOPE_B_TENANT = "<tenant-b>"
+.\.venv\Scripts\python.exe -m scripts.verify_formal_evidence_isolation
 ```
 
 ## Architecture and evidence

@@ -62,6 +62,12 @@ def test_retrieval_identity_migration_fences_content_and_authority():
     assert "ck_retrieval_chunk_authority" in migration
 
 
+def test_evidence_bibliography_migration_persists_source_title_and_publisher():
+    migration = Path("alembic/versions/0013_evidence_bibliography.py").read_text(encoding="utf-8")
+    assert 'down_revision = "0012_retrieval_identity_fencing"' in migration
+    assert '"source_title"' in migration and '"publisher"' in migration
+
+
 def test_migration_downgrades_restore_previous_delivery_function_and_runtime_acls():
     integrity = Path("alembic/versions/0009_tenant_integrity_and_least_privilege.py").read_text(encoding="utf-8")
     recovery = Path("alembic/versions/0010_job_recovery_guards.py").read_text(encoding="utf-8")

@@ -42,6 +42,8 @@ class PostgresResearchArtifacts:
             clean = {
                 "id": str(item["id"]), "excerpt": redact_text(str(item["excerpt"])),
                 "source_uri": redact_url(str(item["source_uri"])),
+                "source_title": redact_text(str(item.get("source_title") or "")),
+                "publisher": redact_text(str(item.get("publisher") or "")),
                 "authority_tier": int(item["authority_tier"]),
             }
             if not clean["excerpt"] or not 0 <= clean["authority_tier"] <= 5:
@@ -81,18 +83,21 @@ class PostgresResearchArtifacts:
                 self._insert_if_absent(connection, evidence_items_pg, {
                     "id": item["id"], "run_id": run_id, "tenant_id": principal.tenant_id,
                     "content_hash": item["content_hash"], "excerpt": item["excerpt"],
-                    "source_uri": item["source_uri"], "authority_tier": item["authority_tier"],
+                    "source_uri": item["source_uri"], "source_title": item["source_title"],
+                    "publisher": item["publisher"], "authority_tier": item["authority_tier"],
                     "created_at": now,
                 })
                 persisted = connection.execute(select(
                     evidence_items_pg.c.run_id, evidence_items_pg.c.tenant_id,
                     evidence_items_pg.c.content_hash, evidence_items_pg.c.excerpt,
-                    evidence_items_pg.c.source_uri, evidence_items_pg.c.authority_tier,
+                    evidence_items_pg.c.source_uri, evidence_items_pg.c.source_title,
+                    evidence_items_pg.c.publisher, evidence_items_pg.c.authority_tier,
                 ).where(evidence_items_pg.c.id == item["id"])).mappings().one_or_none()
                 if persisted is None or dict(persisted) != {
                     "run_id": run_id, "tenant_id": principal.tenant_id,
                     "content_hash": item["content_hash"], "excerpt": item["excerpt"],
-                    "source_uri": item["source_uri"], "authority_tier": item["authority_tier"],
+                    "source_uri": item["source_uri"], "source_title": item["source_title"],
+                    "publisher": item["publisher"], "authority_tier": item["authority_tier"],
                 }:
                     raise ArtifactVerificationError("evidence replay identity conflict")
             for claim in normalized_claims:
@@ -142,6 +147,54 @@ class PostgresResearchArtifacts:
             "citations": json.loads(row["citations_json"]),
             "content_hash": row["content_hash"], "created_at": row["created_at"],
         }
+
+    def get_evidence(self, principal: PrincipalContext, run_id: str) -> dict | None:
+        """Resolve a run's persisted evidence into a user-facing bibliography.
+
+        Returns None when the run does not exist for this principal; otherwise a
+        mapping with the run id and an ordered list of sources, each resolving an
+        evidence id to its title, URL, publisher, excerpt and supporting claims.
+        """
+        with principal_transaction(self.engine, principal) as connection:
+            exists = connection.execute(select(research_runs_pg.c.id).where(and_(
+                research_runs_pg.c.id == run_id,
+                research_runs_pg.c.tenant_id == principal.tenant_id,
+            ))).scalar_one_or_none()
+            if exists is None:
+                return None
+            evidence_rows = connection.execute(select(
+                evidence_items_pg.c.id, evidence_items_pg.c.source_title,
+                evidence_items_pg.c.source_uri, evidence_items_pg.c.publisher,
+                evidence_items_pg.c.excerpt, evidence_items_pg.c.authority_tier,
+                evidence_items_pg.c.content_hash,
+            ).where(and_(
+                evidence_items_pg.c.run_id == run_id,
+                evidence_items_pg.c.tenant_id == principal.tenant_id,
+            )).order_by(evidence_items_pg.c.created_at, evidence_items_pg.c.id)).mappings().all()
+            claim_rows = connection.execute(select(
+                claims_pg.c.id, claims_pg.c.claim_text, claims_pg.c.status,
+                claims_pg.c.confidence, claims_pg.c.evidence_ids_json,
+            ).where(and_(
+                claims_pg.c.run_id == run_id,
+                claims_pg.c.tenant_id == principal.tenant_id,
+            ))).mappings().all()
+        claims_by_evidence: dict[str, list[dict]] = {}
+        for claim in claim_rows:
+            for evidence_id in json.loads(claim["evidence_ids_json"]):
+                claims_by_evidence.setdefault(str(evidence_id), []).append({
+                    "claim_id": claim["id"], "text": claim["claim_text"],
+                    "status": claim["status"], "confidence": claim["confidence"],
+                })
+        sources = []
+        for item in evidence_rows:
+            sources.append({
+                "evidence_id": item["id"], "title": item["source_title"],
+                "url": item["source_uri"], "publisher": item["publisher"],
+                "excerpt": item["excerpt"], "authority_tier": item["authority_tier"],
+                "content_hash": item["content_hash"],
+                "claims": claims_by_evidence.get(item["id"], []),
+            })
+        return {"run_id": run_id, "sources": sources}
 
     def complete_report(
         self, principal: PrincipalContext, run_id: str, *, lease_token: str,

@@ -156,6 +156,15 @@ def build_formal_research_router(
             "report": artifacts.get_report(principal, run_id),
         }
 
+    @router.get("/{run_id}/evidence")
+    def get_run_evidence(
+        run_id: str, principal: PrincipalContext = Depends(can_read),
+    ) -> dict:
+        evidence = artifacts.get_evidence(principal, run_id)
+        if evidence is None:
+            raise HTTPException(status_code=404, detail="research run not found")
+        return evidence
+
     @router.post("/{run_id}/pause")
     def pause_research(
         run_id: str, principal: PrincipalContext = Depends(can_create),

@@ -51,7 +51,9 @@ class SyntheticSmokeResearchProcessor:
         evidence_id, claim_id = f"synthetic-evidence-{run_id}", f"synthetic-claim-{run_id}"
         source_uri = redact_url(f"https://synthetic.invalid/finscope/{run_id}")
         evidence_identity = {
-            "id": evidence_id, "excerpt": excerpt, "source_uri": source_uri, "authority_tier": 0,
+            "id": evidence_id, "excerpt": excerpt, "source_uri": source_uri,
+            "source_title": "FinScope synthetic smoke", "publisher": "FinScope",
+            "authority_tier": 0,
         }
         evidence_hash = _sha(_canonical(evidence_identity))
         self.artifacts.persist_verified_evidence(
@@ -171,6 +173,7 @@ class FormalRealRagProcessor:
             evidence_identity = {
                 "id": evidence_id, "excerpt": hit["text"],
                 "source_uri": hit["source_uri"],
+                "source_title": hit["title"], "publisher": hit["publisher"],
                 "authority_tier": int(hit["authority_tier"]),
             }
             evidence.append(evidence_identity)

@@ -33,6 +33,7 @@ def _app(sender=None, *, execution_profile="synthetic_smoke"):
         execution_profile=execution_profile,
     ))
     app.state.durable = durable
+    app.state.artifacts = PostgresResearchArtifacts(engine)
     app.state.principal = principal
     return TestClient(app), sent
 
@@ -180,3 +181,117 @@ def test_synthetic_runtime_rejects_resume_and_retry_of_historical_real_runs():
     )
     assert rejected_retry.status_code == 409
     assert "switch runtime profile" in rejected_retry.json()["detail"]
+
+
+def test_evidence_endpoint_resolves_citation_to_title_and_url():
+    client, _ = _app()
+    repo = client.app.state.durable
+    artifacts = client.app.state.artifacts
+    principal = client.app.state.principal
+    created = repo.create_run(
+        principal, company="Tencent", question="bibliography resolution",
+        idempotency_key="evidence-endpoint-01",
+        plan={"version": 1, "goal": "bibliography resolution", "steps": [{"id": "s"}],
+              "execution_profile": "synthetic_smoke"},
+        owner_id="test-worker", enqueue_kind="synthetic_smoke_research",
+    )
+    artifacts.persist_verified_evidence(
+        principal, created.run_id, lease_token=created.lease_token,
+        evidence=[{
+            "id": "evidence-e1", "excerpt": "现金流为正",
+            "source_uri": "https://fixture.invalid/tencent/cashflow",
+            "source_title": "腾讯现金流演示摘录",
+            "publisher": "FinScope labelled local fixture",
+            "authority_tier": 2,
+        }],
+        claims=[{
+            "id": "claim-c1", "text": "现金流为正", "status": "supported",
+            "confidence": 0.9, "evidence_ids": ["evidence-e1"],
+        }],
+    )
+    response = client.get(f"/api/research/{created.run_id}/evidence")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == created.run_id
+    assert len(body["sources"]) == 1
+    source = body["sources"][0]
+    assert source["evidence_id"] == "evidence-e1"
+    assert source["title"] == "腾讯现金流演示摘录"
+    assert source["url"] == "https://fixture.invalid/tencent/cashflow"
+    assert source["publisher"] == "FinScope labelled local fixture"
+    assert source["authority_tier"] == 2
+    assert source["excerpt"] == "现金流为正"
+    assert source["claims"] == [{
+        "claim_id": "claim-c1", "text": "现金流为正",
+        "status": "supported", "confidence": 90,
+    }]
+
+
+def test_evidence_endpoint_returns_404_for_unknown_run():
+    client, _ = _app()
+    response = client.get("/api/research/missing-run/evidence")
+    assert response.status_code == 404
+
+
+def test_evidence_endpoint_enforces_tenant_isolation():
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
+    metadata.create_all(engine)
+    now = datetime.now(timezone.utc)
+    with engine.begin() as connection:
+        connection.execute(users.insert().values(
+            id="u1", email="a@example.com", password_hash="x", created_at=now,
+        ))
+        connection.execute(users.insert().values(
+            id="u2", email="b@example.com", password_hash="x", created_at=now,
+        ))
+        connection.execute(tenants.insert().values(id="t1", name="T1", created_at=now))
+        connection.execute(tenants.insert().values(id="t2", name="T2", created_at=now))
+        connection.execute(memberships.insert().values(
+            tenant_id="t1", user_id="u1", role="owner",
+        ))
+        connection.execute(memberships.insert().values(
+            tenant_id="t2", user_id="u2", role="owner",
+        ))
+    principal_a = PrincipalContext("u1", "t1", "owner")
+    principal_b = PrincipalContext("u2", "t2", "owner")
+    durable = PostgresDurableRepository(engine)
+    artifacts = PostgresResearchArtifacts(engine)
+
+    def make_app(principal):
+        app = FastAPI()
+        app.include_router(build_formal_research_router(
+            durable, JobLedger(engine), artifacts,
+            can_create=lambda: principal, can_read=lambda: principal,
+            sender=lambda job_id: None, execution_profile="synthetic_smoke",
+        ))
+        return TestClient(app)
+
+    client_a, client_b = make_app(principal_a), make_app(principal_b)
+    created = durable.create_run(
+        principal_a, company="Tencent", question="tenant isolation",
+        idempotency_key="evidence-isolation-01",
+        plan={"version": 1, "goal": "tenant isolation", "steps": [{"id": "s"}],
+              "execution_profile": "synthetic_smoke"},
+        owner_id="test-worker", enqueue_kind="synthetic_smoke_research",
+    )
+    artifacts.persist_verified_evidence(
+        principal_a, created.run_id, lease_token=created.lease_token,
+        evidence=[{
+            "id": "evidence-private", "excerpt": "TENANT_A_PRIVATE_MARKER",
+            "source_uri": "https://fixture.invalid/private",
+            "source_title": "租户A私有记录", "publisher": "private fixture",
+            "authority_tier": 2,
+        }],
+        claims=[{
+            "id": "claim-private", "text": "TENANT_A_PRIVATE_MARKER",
+            "status": "supported", "confidence": 0.9,
+            "evidence_ids": ["evidence-private"],
+        }],
+    )
+    own = client_a.get(f"/api/research/{created.run_id}/evidence")
+    assert own.status_code == 200
+    assert own.json()["sources"][0]["evidence_id"] == "evidence-private"
+    other = client_b.get(f"/api/research/{created.run_id}/evidence")
+    assert other.status_code == 404
