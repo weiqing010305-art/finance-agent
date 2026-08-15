@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -40,6 +41,10 @@ class RuntimeSettings:
     smtp_port: int
     allowed_origins: tuple[str, ...]
     formal_executor: str
+    milvus_uri: str
+    milvus_collection: str
+    rag_index_version: str
+    bge_device: str | None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "RuntimeSettings":
@@ -66,6 +71,9 @@ class RuntimeSettings:
         executor = (values.get("FINSCOPE_FORMAL_EXECUTOR") or "synthetic_smoke").strip()
         if executor not in {"synthetic_smoke", "real_rag_local"}:
             raise SettingsError("FINSCOPE_FORMAL_EXECUTOR is not supported")
+        collection = (values.get("MILVUS_COLLECTION") or "finance_agent_chunks_v1").strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,254}", collection):
+            raise SettingsError("MILVUS_COLLECTION is invalid")
         return cls(
             mode=mode, database_url=database_url, redis_url=redis_url,
             minio_endpoint=minio_endpoint, minio_access_key=access,
@@ -75,4 +83,8 @@ class RuntimeSettings:
             smtp_port=int(values.get("SMTP_PORT") or "1025"),
             allowed_origins=origins,
             formal_executor=executor,
+            milvus_uri=(values.get("MILVUS_URI") or "http://milvus:19530").strip(),
+            milvus_collection=collection,
+            rag_index_version=(values.get("RAG_INDEX_VERSION") or "formal_fixture_v1").strip(),
+            bge_device=(values.get("BGE_DEVICE") or "").strip() or None,
         )

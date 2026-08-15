@@ -4,17 +4,18 @@ FinScope is a portfolio-grade financial research agent built around explicit
 intent routing, deterministic planning, a six-state durable runner, evidence
 verification, hybrid RAG and governed memory. Phase 6 adds a local,
 production-shaped deployment with PostgreSQL RLS, invitation authentication,
-Redis/Dramatiq, MinIO, Caddy and observability profiles. Phase 7 proves the
-pinned Chinese BGE model against a real Milvus BM25+dense hybrid collection.
+Redis/Dramatiq, MinIO, Caddy and observability profiles. Phase 8 connects the
+pinned Chinese BGE model and real Milvus BM25+dense hybrid retrieval to the
+durable formal worker through a PostgreSQL authorization boundary.
 
 ## Current truth
 
-The formal local runtime currently uses the clearly labelled
-`synthetic_smoke` executor. It proves authentication, tenant isolation, durable
-job delivery, pause/resume, checkpointing and verified report persistence. It
-does **not** call external financial tools and its output must not be treated as
-investment research. Real Milvus/BGE retrieval is now independently verified;
-connecting it to the formal executor and external research remains a later gate.
+The safe default remains the clearly labelled `synthetic_smoke` executor. An
+explicit `real_rag_local` profile now runs real BGE query embeddings and native
+Milvus hybrid retrieval over a labelled local fixture, with allowed chunk IDs,
+content hashes and authority tiers owned by PostgreSQL. It produces an
+extractive cited report and supports durable pause/resume, but it still does
+**not** call live financial sources or an LLM and is not investment research.
 
 ## Start locally (Windows)
 
@@ -41,6 +42,17 @@ Useful commands:
 .\scripts\local.ps1 down
 ```
 
+Run the opt-in formal real-RAG demo after bootstrap (use the printed IDs):
+
+```powershell
+.\scripts\local.ps1 up-rag
+.\scripts\local.ps1 seed-rag -TenantId <tenant-id> -UserId <user-id>
+```
+
+The first run downloads the pinned BGE model into a persistent Docker volume.
+Repeated seeding verifies the same content identity and is idempotent; changed
+content or authority under an existing chunk ID is rejected.
+
 Create an encrypted PostgreSQL + MinIO backup and run an isolated restore drill:
 
 ```powershell
@@ -59,7 +71,9 @@ under the ignored `secrets/` directory and are never passed in command-line URLs
 ## Runtime profiles
 
 - `core`: PostgreSQL, Redis, MinIO, Mailpit, API, worker, dispatcher and Caddy.
-- `rag`: Milvus 2.6.2 with dedicated etcd/object storage; BGE runs in the host venv.
+- `rag`: Milvus 2.6.2 with dedicated etcd/object storage.
+- `rag-admin`: one-shot labelled fixture indexer; the RAG worker and indexer use
+  a dedicated CPU-only image and shared persistent Hugging Face cache.
 - `observability`: OpenTelemetry Collector, Prometheus, Loki and Grafana.
 
 ```powershell
@@ -81,9 +95,11 @@ docker compose --profile rag up -d milvus-etcd milvus-minio milvus
 - [Phase 6 design](docs/plans/2026-08-13-phase-6-local-production-design.md)
 - [Phase 6 implementation plan](docs/plans/2026-08-13-phase-6-local-production.md)
 - [Phase 7 real Milvus/BGE verification](docs/reviews/phase-7-verification.md)
+- [Phase 8 formal real-RAG verification](docs/reviews/phase-8-verification.md)
 - [Architecture decisions](docs/adr/README.md)
 
 Phase 6 acceptance covers the real `core` Compose profile and an isolated
 PostgreSQL/MinIO restore drill. Phase 7 separately executed real BGE/Milvus on a
 small synthetic Chinese corpus; its perfect smoke metrics do not establish
-production-corpus retrieval quality, capacity or financial correctness.
+production-corpus retrieval quality, capacity or financial correctness. Phase 8
+adds the end-to-end formal worker proof without claiming live finance research.

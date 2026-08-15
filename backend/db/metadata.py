@@ -123,8 +123,11 @@ retrieval_chunks = Table(
     Column("access_scope", String(16), nullable=False),
     Column("embedding_profile_id", String(128), nullable=False),
     Column("index_version", String(128), nullable=False),
+    Column("content_hash", String(64)),
+    Column("authority_tier", Integer, nullable=False, server_default="0"),
     Column("created_at", DateTime(timezone=True), nullable=False),
     CheckConstraint("access_scope IN ('public','private')", name="ck_retrieval_chunk_scope"),
+    CheckConstraint("authority_tier BETWEEN 0 AND 5", name="ck_retrieval_chunk_authority"),
 )
 research_runs_pg = Table(
     "research_runs_pg", metadata,

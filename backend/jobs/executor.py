@@ -80,14 +80,19 @@ class PersistedJobExecutor:
 
             def heartbeat() -> None:
                 while not stop.wait(self.heartbeat_interval_seconds):
-                    job_ok = self.ledger.heartbeat(principal, claim)
-                    run_ok = self.durable.renew_run_lease(
-                        principal, run_id, lease_token=lease_token,
-                    )
-                    if job_ok and run_ok:
+                    try:
+                        fences_ok = self.ledger.heartbeat_with_run_lease(
+                            principal, claim, run_id=run_id,
+                            run_lease_token=lease_token,
+                            run_lease_seconds=self.durable.lease_seconds,
+                        )
+                    except Exception:
+                        lost.set()
+                        return
+                    if fences_ok:
                         continue
                     run = self.durable.get_run(principal, run_id)
-                    if not job_ok or run is None or run.get("status") not in {
+                    if run is None or run.get("status") not in {
                         "paused", "completed", "failed",
                     }:
                         lost.set()

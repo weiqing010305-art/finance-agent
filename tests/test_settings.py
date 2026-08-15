@@ -8,6 +8,7 @@ def test_test_mode_has_explicit_non_production_defaults():
     assert settings.mode == "test"
     assert settings.database_url.startswith("sqlite")
     assert settings.formal_executor == "synthetic_smoke"
+    assert settings.milvus_collection == "finance_agent_chunks_v1"
 
 
 def test_formal_executor_is_strictly_allowlisted():
@@ -18,6 +19,20 @@ def test_formal_executor_is_strictly_allowlisted():
         RuntimeSettings.from_env({
             "FINSCOPE_RUNTIME_MODE": "test", "FINSCOPE_FORMAL_EXECUTOR": "arbitrary",
         })
+
+
+def test_rag_collection_name_is_fail_closed():
+    with pytest.raises(SettingsError, match="MILVUS_COLLECTION"):
+        RuntimeSettings.from_env({"FINSCOPE_RUNTIME_MODE": "test", "MILVUS_COLLECTION": "bad-name"})
+
+
+def test_dispatcher_import_does_not_initialize_heavy_worker(monkeypatch):
+    monkeypatch.setenv("FINSCOPE_RUNTIME_MODE", "local")
+    monkeypatch.setenv("DATABASE_ROLE", "finscope_worker")
+    monkeypatch.setenv("FINSCOPE_FORMAL_EXECUTOR", "real_rag_local")
+    monkeypatch.delenv("FINSCOPE_JOB_CONSUMER", raising=False)
+    from backend.jobs.worker import _configure_formal_worker
+    _configure_formal_worker()
 
 
 def test_formal_runtime_requires_postgres_and_secrets(tmp_path):

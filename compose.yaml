@@ -63,7 +63,7 @@ services:
     networks: [backend, edge]
   api:
     profiles: [core]
-    build: .
+    build: {context: ., target: runtime}
     environment:
       FINSCOPE_RUNTIME_MODE: local
       DATABASE_ROLE: finscope_app
@@ -75,7 +75,7 @@ services:
       MINIO_SECRET_KEY_FILE: /run/secrets/minio_app_secret_key
       JWT_SIGNING_KEY_FILE: /run/secrets/jwt_signing_key
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      FINSCOPE_FORMAL_EXECUTOR: synthetic_smoke
+      FINSCOPE_FORMAL_EXECUTOR: ${FINSCOPE_FORMAL_EXECUTOR:-synthetic_smoke}
     secrets: [postgres_app_password, minio_app_access_key, minio_app_secret_key, jwt_signing_key]
     depends_on:
       migrate: {condition: service_completed_successfully}
@@ -86,10 +86,12 @@ services:
     networks: [backend, egress]
   worker:
     profiles: [core]
-    build: .
+    build: {context: ., target: rag-runtime}
+    restart: on-failure
     command: [python, scripts/container_entrypoint.py, dramatiq, backend.jobs.worker, --processes, "1", --threads, "4"]
     environment:
       FINSCOPE_RUNTIME_MODE: local
+      FINSCOPE_JOB_CONSUMER: "1"
       DATABASE_ROLE: finscope_worker
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_worker_password
       REDIS_URL: redis://redis:6379/0
@@ -97,19 +99,25 @@ services:
       MINIO_ACCESS_KEY_FILE: /run/secrets/minio_worker_access_key
       MINIO_SECRET_KEY_FILE: /run/secrets/minio_worker_secret_key
       JWT_SIGNING_KEY_FILE: /run/secrets/jwt_signing_key
-      FINSCOPE_FORMAL_EXECUTOR: synthetic_smoke
+      FINSCOPE_FORMAL_EXECUTOR: ${FINSCOPE_FORMAL_EXECUTOR:-synthetic_smoke}
+      MILVUS_URI: http://milvus:19530
+      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-finance_agent_chunks_v1}
+      RAG_INDEX_VERSION: ${RAG_INDEX_VERSION:-formal_fixture_v1}
+      BGE_DEVICE: ${BGE_DEVICE:-cpu}
+      HF_HOME: /var/cache/huggingface
     secrets: [postgres_worker_password, minio_worker_access_key, minio_worker_secret_key, jwt_signing_key]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
+    volumes: [huggingface_cache:/var/cache/huggingface]
     networks: [backend, egress]
   dispatcher:
     profiles: [core]
-    build: .
+    build: {context: ., target: runtime}
     command: [python, scripts/container_entrypoint.py, python, -m, scripts.reconcile_jobs]
     environment:
       FINSCOPE_RUNTIME_MODE: local
-      FINSCOPE_FORMAL_EXECUTOR: synthetic_smoke
+      FINSCOPE_FORMAL_EXECUTOR: ${FINSCOPE_FORMAL_EXECUTOR:-synthetic_smoke}
       DATABASE_ROLE: finscope_worker
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_worker_password
       REDIS_URL: redis://redis:6379/0
@@ -125,7 +133,7 @@ services:
     networks: [backend]
   migrate:
     profiles: [core]
-    build: .
+    build: {context: ., target: runtime}
     command: [python, scripts/container_entrypoint.py, python, -m, scripts.migrate_formal]
     environment:
       DATABASE_ROLE: finscope_admin
@@ -209,6 +217,24 @@ services:
       milvus-minio: {condition: service_healthy}
     volumes: [milvus_data:/var/lib/milvus]
     networks: [backend, edge]
+  rag-seed:
+    profiles: [rag-admin]
+    build: {context: ., target: rag-runtime}
+    entrypoint: [python, scripts/container_entrypoint.py, python, -m, scripts.seed_local_rag]
+    command: [--help]
+    environment:
+      DATABASE_ROLE: finscope_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+      MILVUS_URI: http://milvus:19530
+      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-finance_agent_chunks_v1}
+      BGE_DEVICE: ${BGE_DEVICE:-cpu}
+      HF_HOME: /var/cache/huggingface
+    secrets: [postgres_admin_password]
+    volumes: [huggingface_cache:/var/cache/huggingface]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      milvus: {condition: service_healthy}
+    networks: [backend, egress]
   otel-collector:
     profiles: [observability]
     image: otel/opentelemetry-collector-contrib:0.134.0
@@ -246,6 +272,7 @@ volumes:
   milvus_object_data: {}
   milvus_data: {}
   caddy_data: {}
+  huggingface_cache: {}
 secrets:
   postgres_admin_password: {file: ./secrets/postgres_admin_password}
   postgres_app_password: {file: ./secrets/postgres_app_password}

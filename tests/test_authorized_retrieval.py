@@ -5,8 +5,9 @@ from sqlalchemy.pool import StaticPool
 
 from backend.auth.models import PrincipalContext
 from backend.authorized_retrieval import AuthorizedChunkCatalog, AuthorizedMilvusRetriever
+from backend.db.rag_catalog import chunk_content_hash
 from backend.db.metadata import metadata, retrieval_chunks, tenants, users
-from backend.retrieval import RetrievalFilters, RetrievalQuery, RetrievalResponse
+from backend.retrieval import RetrievalFilters, RetrievalQuery, RetrievalResponse, RetrievalResult
 from backend.milvus_retrieval import build_filter
 
 
@@ -27,6 +28,7 @@ def _setup():
             c.execute(retrieval_chunks.insert().values(
                 chunk_id=chunk, tenant_id=tenant, document_id=chunk, document_version_id=chunk,
                 access_scope=scope, embedding_profile_id="bge", index_version="v1", created_at=now,
+                content_hash=f"hash-{chunk}", authority_tier=2,
             ))
     return engine
 
@@ -60,3 +62,51 @@ def test_authorized_filter_uses_escaped_ids_not_caller_scope():
     expression = build_filter(_query(), allowed_chunk_ids=['a-private', 'x" or true'])
     assert 'chunk_id in ["a-private","x\\" or true"]' in expression
     assert "access_scope ==" not in expression
+
+
+def test_milvus_result_must_match_postgres_owned_content_identity():
+    engine = _setup()
+
+    class MutatedRetriever(SpyRetriever):
+        def search_authorized(self, request, *, allowed_chunk_ids):
+            self.allowed = allowed_chunk_ids
+            return RetrievalResponse(backend="milvus", mode="hybrid", results=[RetrievalResult(
+                chunk_id="a-private", document_id="a-private",
+                document_version_id="a-private", text="mutated", title="title",
+                source_uri="https://fixture.invalid/a", publisher="fixture",
+                source_type="fixture", access_scope="private", fused_score=1, rank=1,
+                authority_tier=5, embedding_profile_id="bge", index_version="v1",
+            )])
+
+    import pytest
+    with pytest.raises(PermissionError, match="identity"):
+        AuthorizedMilvusRetriever(AuthorizedChunkCatalog(engine), MutatedRetriever()).search(
+            PrincipalContext("u", "a", "viewer"), _query()
+        )
+
+
+def test_authorized_but_wrong_company_result_is_rejected_after_milvus():
+    result = RetrievalResult(
+        chunk_id="moutai", document_id="moutai", document_version_id="moutai-v1",
+        text="贵州茅台现金流", title="fixture", source_uri="https://fixture.invalid/moutai",
+        publisher="fixture", source_type="local_fixture", access_scope="public",
+        fused_score=1, rank=1, authority_tier=2, embedding_profile_id="bge",
+        index_version="v1", company="贵州茅台",
+    )
+
+    class Catalog:
+        def authorizations(self, principal, request):
+            return {"moutai": (chunk_content_hash(result), 2)}
+
+    class Retriever:
+        def search_authorized(self, request, *, allowed_chunk_ids):
+            return RetrievalResponse(backend="milvus", mode="hybrid", results=[result])
+
+    query = _query().model_copy(update={
+        "filters": RetrievalFilters(company="腾讯", access_scope="private"),
+    })
+    import pytest
+    with pytest.raises(PermissionError, match="requested filters"):
+        AuthorizedMilvusRetriever(Catalog(), Retriever()).search(
+            PrincipalContext("u", "a", "viewer"), query,
+        )

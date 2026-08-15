@@ -78,7 +78,7 @@ def test_bundle_cli_requires_exact_database_object_inventory(tmp_path):
     inventory = source / "object-inventory.tsv"
     inventory.write_text(f"private/t/o/hash/value\t{len(body)}\t{digest}\n", encoding="utf-8")
     schema = source / "schema-revision.txt"
-    schema.write_text("0011_auth_role_hardening\n", encoding="utf-8")
+    schema.write_text("0012_retrieval_identity_fencing\n", encoding="utf-8")
     key = tmp_path / "key"; key.write_bytes(b"k" * 32)
     bundle = tmp_path / "backup.fsbk"
     command = [sys.executable, "-m", "scripts.backup_bundle_cli", "create", "--source", str(source),

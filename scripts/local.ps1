@@ -1,9 +1,11 @@
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("init", "up", "status", "logs", "bootstrap", "down", "test")]
+    [ValidateSet("init", "up", "up-rag", "seed-rag", "status", "logs", "bootstrap", "down", "test")]
     [string]$Action = "status",
     [string]$Email = "owner@example.com",
-    [string]$TenantName = "FinScope Local"
+    [string]$TenantName = "FinScope Local",
+    [string]$TenantId,
+    [string]$UserId
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,6 +66,22 @@ switch ($Action) {
         if ($LASTEXITCODE -ne 0) { throw "Docker Compose startup failed" }
         Write-Host "FinScope: https://localhost:8443/  Mailpit: http://127.0.0.1:8025/"
     }
+    "up-rag" {
+        Initialize-Secrets
+        Assert-DockerReady
+        $env:FINSCOPE_FORMAL_EXECUTOR = "real_rag_local"
+        docker compose --profile core --profile rag up -d --build
+        if ($LASTEXITCODE -ne 0) { throw "Docker Compose real-RAG startup failed" }
+        Write-Host "FinScope real local RAG profile: https://localhost:8443/"
+    }
+    "seed-rag" {
+        Assert-DockerReady
+        if (-not $TenantId -or -not $UserId) {
+            throw "seed-rag requires -TenantId and -UserId from the bootstrap result"
+        }
+        docker compose --profile core --profile rag --profile rag-admin run --rm rag-seed seed --tenant-id $TenantId --user-id $UserId
+        if ($LASTEXITCODE -ne 0) { throw "Local RAG fixture seed failed" }
+    }
     "status" {
         Assert-DockerReady
         docker compose --profile core ps
@@ -88,7 +106,7 @@ switch ($Action) {
     }
     "down" {
         Assert-DockerReady
-        docker compose --profile core down
+        docker compose --profile core --profile rag down
     }
     "test" {
         & ".\.venv\Scripts\python.exe" -m pytest -q

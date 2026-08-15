@@ -355,6 +355,10 @@ class PostgresDurableRepository:
                     research_leases_pg.c.tenant_id == principal.tenant_id,
                 )))
             self._event(connection, principal, run_id, "step.completed", {"step_id": step_id})
+            if target == "paused":
+                self._event(connection, principal, run_id, "run.paused", {
+                    "state_version": run.state_version + 1, "after_step_id": step_id,
+                })
             return self._snapshot(connection, principal, run_id)
 
     @staticmethod

@@ -111,3 +111,72 @@ def test_owner_can_retry_a_failed_run_as_a_new_idempotent_run():
     assert retried.json()["run_id"] != created["run_id"]
     assert retried.json()["retried_from"] == created["run_id"]
     assert sent == [created["run_id"], retried.json()["run_id"]]
+
+
+def _historical_run(client, *, profile: str, key: str):
+    return client.app.state.durable.create_run(
+        client.app.state.principal,
+        company="Tencent",
+        question="resume a historical execution profile",
+        idempotency_key=key,
+        plan={
+            "version": 1,
+            "goal": "resume a historical execution profile",
+            "steps": [{"id": "historical_step"}],
+            "execution_profile": profile,
+        },
+        owner_id="historical-worker",
+        enqueue_kind=f"{profile}_research",
+    )
+
+
+def test_real_runtime_can_resume_a_historical_synthetic_run():
+    client, sent = _app(execution_profile="real_rag_local")
+    created = _historical_run(client, profile="synthetic_smoke", key="historical-synthetic")
+    repo = client.app.state.durable
+    principal = client.app.state.principal
+    repo.transition(
+        principal, created.run_id, from_status="running", to_status="pause_requested",
+        expected_version=0,
+    )
+    repo.transition(
+        principal, created.run_id, from_status="pause_requested", to_status="paused",
+        expected_version=1,
+    )
+
+    response = client.post(f"/api/research/{created.run_id}/resume")
+
+    assert response.status_code == 202
+    assert response.json()["execution_profile"] == "synthetic_smoke"
+    assert len(sent) == 1
+
+
+def test_synthetic_runtime_rejects_resume_and_retry_of_historical_real_runs():
+    client, _ = _app(execution_profile="synthetic_smoke")
+    repo = client.app.state.durable
+    principal = client.app.state.principal
+
+    paused = _historical_run(client, profile="real_rag_local", key="historical-real-paused")
+    repo.transition(
+        principal, paused.run_id, from_status="running", to_status="pause_requested",
+        expected_version=0,
+    )
+    repo.transition(
+        principal, paused.run_id, from_status="pause_requested", to_status="paused",
+        expected_version=1,
+    )
+    rejected_resume = client.post(f"/api/research/{paused.run_id}/resume")
+    assert rejected_resume.status_code == 409
+    assert "switch runtime profile" in rejected_resume.json()["detail"]
+
+    failed = _historical_run(client, profile="real_rag_local", key="historical-real-failed")
+    repo.transition(
+        principal, failed.run_id, from_status="running", to_status="failed",
+        expected_version=0,
+    )
+    rejected_retry = client.post(
+        f"/api/research/{failed.run_id}/retry",
+        headers={"Idempotency-Key": "historical-real-retry"},
+    )
+    assert rejected_retry.status_code == 409
+    assert "switch runtime profile" in rejected_retry.json()["detail"]

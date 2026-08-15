@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import time
 
 import pytest
 from sqlalchemy import create_engine, select, update
@@ -7,7 +8,10 @@ from sqlalchemy.pool import StaticPool
 from backend.auth.models import PrincipalContext
 from backend.db.artifacts import PostgresResearchArtifacts
 from backend.db.durable import DurableConflict, PostgresDurableRepository
-from backend.db.metadata import evidence_items_pg, jobs, memberships, metadata, reports_pg, tenants, users
+from backend.db.metadata import (
+    evidence_items_pg, jobs, memberships, metadata, reports_pg, research_events_pg,
+    research_leases_pg, research_steps_pg, tenants, users,
+)
 from backend.formal_processor import SyntheticSmokeResearchProcessor
 from backend.jobs.executor import PersistedJobExecutor, WorkerJobContextResolver
 from backend.jobs.ledger import JobLedger
@@ -123,6 +127,9 @@ def test_paused_run_resumes_via_a_new_claim_fenced_job():
     executor(created.job_id)
     paused = durable.get_run(principal, created.run_id)
     assert paused["status"] == "paused"
+    with engine.connect() as connection:
+        event_types = list(connection.scalars(select(research_events_pg.c.event_type)))
+    assert event_types.count("run.paused") == 1
     resume_job = durable.resume_with_job(
         principal, created.run_id, expected_version=paused["state_version"],
         enqueue_kind="synthetic_smoke_research",
@@ -201,3 +208,35 @@ def test_worker_rechecks_membership_capability_after_job_creation():
     assert called == []
     with engine.connect() as connection:
         assert connection.scalar(select(jobs.c.status)) == "retry"
+
+
+def test_lost_job_claim_atomically_revokes_run_lease_before_handler_commit():
+    engine, principal = _runtime(); durable = PostgresDurableRepository(engine)
+    created = durable.create_run(
+        principal, company="Tencent", question="cash flow", idempotency_key="lost-dual-fence",
+        plan={"steps": [{"id": "fenced"}]}, owner_id="api",
+        enqueue_kind="fenced_research",
+    )
+
+    def handler(context, run_id, lease_token):
+        with engine.begin() as connection:
+            connection.execute(update(jobs).where(jobs.c.id == created.job_id).values(
+                status="retry", claim_token_hash=None, claim_expires_at=None,
+            ))
+        time.sleep(0.08)
+        durable.commit_step(
+            context, run_id, lease_token=lease_token, step_id="fenced",
+            step_input={}, step_output={"must_not_commit": True},
+            next_pointer="done", progress=90, budget_delta=0,
+        )
+
+    executor = PersistedJobExecutor(
+        resolver=WorkerJobContextResolver(engine), ledger=JobLedger(engine), durable=durable,
+        handlers={"fenced_research": handler}, owner_id="worker:test",
+        heartbeat_interval_seconds=0.01,
+    )
+    with pytest.raises(DurableConflict, match="lease lost"):
+        executor(created.job_id)
+    with engine.connect() as connection:
+        assert connection.scalar(select(research_leases_pg.c.run_id)) is None
+        assert connection.scalar(select(research_steps_pg.c.step_id)) is None

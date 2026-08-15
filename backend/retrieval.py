@@ -83,6 +83,10 @@ class RetrievalResult(BaseModel):
     published_at: str | None = None
     embedding_profile_id: str
     index_version: str
+    company: str | None = None
+    symbol: str | None = None
+    market: str | None = None
+    period: str | None = None
 
 
 class RetrievalResponse(BaseModel):
@@ -204,7 +208,7 @@ class InMemoryHybridRetriever:
                 break
         results = [
             RetrievalResult(
-                **chunk.model_dump(exclude={"embedding", "company", "symbol", "market", "period"}),
+                **chunk.model_dump(exclude={"embedding"}),
                 dense_score=dense_scores[chunk.chunk_id],
                 sparse_score=sparse_scores[chunk.chunk_id],
                 fused_score=fused[chunk.chunk_id],

@@ -20,6 +20,10 @@
 | [ADR-0008](0008-use-milvus-hybrid-retrieval.md) | Accepted | Milvus BM25 + dense embedding + RRF 混合检索 |
 | [ADR-0009](0009-use-bge-large-zh-v1-5-embeddings.md) | Accepted | BGE Large 中文稠密向量模型与索引版本治理 |
 | [ADR-0010](0010-govern-long-term-memory-lifecycle-and-retention.md) | Accepted | 长期记忆生命周期、作用域、TTL 与两阶段删除 |
+| [ADR-0011](0011-use-postgresql-rls-and-application-auth.md) | Accepted | PostgreSQL RLS、应用认证与固定 RBAC |
+| [ADR-0012](0012-use-profiled-local-compose-and-s3-compatible-storage.md) | Accepted | 分层本地 Compose 与 S3 兼容对象存储 |
+| [ADR-0013](0013-use-dramatiq-ledger-jobs-and-opentelemetry.md) | Accepted | 持久任务账本、Dramatiq 与可观测性 |
+| [ADR-0014](0014-run-authorized-rag-in-a-dedicated-worker-image.md) | Accepted | 专用 worker 执行 PostgreSQL 授权的真实本地 RAG |
 
 当前仍待决定：
 

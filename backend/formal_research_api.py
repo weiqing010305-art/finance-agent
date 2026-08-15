@@ -28,6 +28,12 @@ def _profile(plan: dict) -> str:
     return value
 
 
+def _profile_available(persisted: str, configured: str) -> bool:
+    return persisted == configured or (
+        configured == "real_rag_local" and persisted == "synthetic_smoke"
+    )
+
+
 class FormalResearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     company: str = Field(min_length=1, max_length=120)
@@ -181,6 +187,10 @@ def build_formal_research_router(
             if plan is None:
                 raise DurableConflict("paused run has no recoverable plan")
             profile = _profile(plan)
+            if not _profile_available(profile, execution_profile):
+                raise DurableConflict(
+                    f"run requires the {profile} executor profile; switch runtime profile before resume"
+                )
             job_id = durable.resume_with_job(
                 principal, run_id, expected_version=int(run["state_version"]),
                 enqueue_kind=_job_kind(profile),
@@ -207,6 +217,11 @@ def build_formal_research_router(
         if plan is None:
             raise HTTPException(status_code=409, detail="failed run has no recoverable plan")
         profile = _profile(plan)
+        if not _profile_available(profile, execution_profile):
+            raise HTTPException(
+                status_code=409,
+                detail=f"run requires the {profile} executor profile; switch runtime profile before retry",
+            )
         try:
             created = durable.create_run(
                 principal, company=previous["company"], question=previous["question"],

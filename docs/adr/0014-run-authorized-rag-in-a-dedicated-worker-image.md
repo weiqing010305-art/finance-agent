@@ -1,6 +1,6 @@
 # ADR-0014: Run authorized RAG in a dedicated worker image
 
-Status: Proposed
+Status: Accepted
 
 Date: 2026-08-14
 

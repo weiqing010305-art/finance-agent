@@ -55,6 +55,13 @@ def test_auth_hardening_removes_unused_identity_writes_and_tenant_fences_users()
     assert "users_tenant_or_invitation" in hardening
 
 
+def test_retrieval_identity_migration_fences_content_and_authority():
+    migration = Path("alembic/versions/0012_retrieval_identity_fencing.py").read_text(encoding="utf-8")
+    assert 'down_revision = "0011_auth_role_hardening"' in migration
+    assert '"content_hash"' in migration and '"authority_tier"' in migration
+    assert "ck_retrieval_chunk_authority" in migration
+
+
 def test_migration_downgrades_restore_previous_delivery_function_and_runtime_acls():
     integrity = Path("alembic/versions/0009_tenant_integrity_and_least_privilege.py").read_text(encoding="utf-8")
     recovery = Path("alembic/versions/0010_job_recovery_guards.py").read_text(encoding="utf-8")

@@ -703,7 +703,7 @@ Memory 还需做消融：无记忆、仅短期、短期加长期，比较质量�
 实现状态（2026-08-14）：代码与离线契约已实现，正式运行时使用
 PostgreSQL/RLS、Argon2id、15 分钟 JWT、HttpOnly 轮换 refresh cookie、固定
 RBAC、PostgreSQL job/outbox、Dramatiq、MinIO、Caddy、可选 Milvus 与可观测
-profiles。Alembic head 为 `0011_auth_role_hardening`；app、worker、admin 使用独立
+profiles。Phase 6 当时的 Alembic head 为 `0011_auth_role_hardening`；app、worker、admin 使用独立
 PostgreSQL 密钥，复合 tenant 外键和收窄授权阻止跨租户父子关系；Worker 必须用有效 job claim
 换取 run lease，dispatcher 可恢复 broker-loss、重试、过期 claim 和最终 dead letter。默认执行器明确为
 `synthetic_smoke`，只证明持久化与证据闸门，不冒充真实金融研究。
@@ -738,6 +738,23 @@ embedding profile 和 index version 过滤通过，每轮只删除自己创建�
 index、过滤和清理链路可运行，不证明生产 Recall、容量、延迟或金融事实准确性；正式
 worker 仍为 `synthetic_smoke`，尚未切换到这条真实 RAG 链路。详见
 [Phase 7 Verification](../reviews/phase-7-verification.md)。
+
+### Phase 8：正式 worker 接入真实本地 RAG
+
+实现状态（2026-08-15）：当前 Alembic head 为
+`0012_retrieval_identity_fencing`。正式运行时保留 `synthetic_smoke` 安全默认，显式
+`real_rag_local` profile 使用专用 CPU-only worker 镜像加载固定 BGE revision，经过
+PostgreSQL/RLS 生成有界 allowed chunk IDs，再调用 Milvus 原生 BM25+dense+RRF。
+PostgreSQL 同时持有 chunk content hash 与 authority tier；Milvus 返回的正文或权威等级
+发生漂移时，worker fail closed，不能写入证据或报告。
+
+本地端到端门禁已用 5 条明确标注的 fixture 完成真实索引、重复幂等 seed、正式 API
+建任务、真实检索、4 条 extractive citation 报告，以及
+`pause_requested -> paused -> resuming -> running -> completed`。跨租户验证中，授权租户
+可见 1 条私有记录，另一租户只见 3 条公开记录，私有泄漏为 0。该结果只证明本地
+fixture 的运行时、授权、恢复与证据链，不代表实时金融数据、生产检索质量或投资建议。
+详见 [ADR-0014](../adr/0014-run-authorized-rag-in-a-dedicated-worker-image.md) 和
+[Phase 8 Verification](../reviews/phase-8-verification.md)。
 
 ## 21. 面试展示主线
 

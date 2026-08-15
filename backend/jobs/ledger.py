@@ -101,6 +101,48 @@ class JobLedger:
             )).values(claim_expires_at=now + timedelta(seconds=self.claim_ttl_seconds), updated_at=now))
             return result.rowcount == 1
 
+    def heartbeat_with_run_lease(
+        self, principal: PrincipalContext, claim: JobClaim, *, run_id: str,
+        run_lease_token: str, run_lease_seconds: int,
+    ) -> bool:
+        """Atomically renew both fences or revoke this worker's run lease."""
+        now = _now()
+        with principal_transaction(self.engine, principal) as connection:
+            job = connection.execute(select(jobs.c.id).where(and_(
+                jobs.c.id == claim.job_id, jobs.c.status == "running",
+                jobs.c.tenant_id == principal.tenant_id,
+                jobs.c.claim_token_hash == _hash(claim.token), jobs.c.claim_expires_at >= now,
+            )).with_for_update()).one_or_none()
+            lease = connection.execute(select(research_leases_pg.c.run_id).where(and_(
+                research_leases_pg.c.run_id == run_id,
+                research_leases_pg.c.tenant_id == principal.tenant_id,
+                research_leases_pg.c.token_hash == _hash(run_lease_token),
+                research_leases_pg.c.expires_at >= now,
+            )).with_for_update()).one_or_none()
+            if job is None or lease is None:
+                connection.execute(delete(research_leases_pg).where(and_(
+                    research_leases_pg.c.run_id == run_id,
+                    research_leases_pg.c.tenant_id == principal.tenant_id,
+                    research_leases_pg.c.token_hash == _hash(run_lease_token),
+                )))
+                return False
+            job_update = connection.execute(update(jobs).where(and_(
+                jobs.c.id == claim.job_id, jobs.c.status == "running",
+                jobs.c.tenant_id == principal.tenant_id,
+                jobs.c.claim_token_hash == _hash(claim.token), jobs.c.claim_expires_at >= now,
+            )).values(
+                claim_expires_at=now + timedelta(seconds=self.claim_ttl_seconds), updated_at=now,
+            ))
+            lease_update = connection.execute(update(research_leases_pg).where(and_(
+                research_leases_pg.c.run_id == run_id,
+                research_leases_pg.c.tenant_id == principal.tenant_id,
+                research_leases_pg.c.token_hash == _hash(run_lease_token),
+                research_leases_pg.c.expires_at >= now,
+            )).values(expires_at=now + timedelta(seconds=run_lease_seconds)))
+            if job_update.rowcount != 1 or lease_update.rowcount != 1:
+                raise RuntimeError("atomic job/run heartbeat conflict")
+            return True
+
     def complete(self, principal: PrincipalContext, claim: JobClaim) -> bool:
         return self._finish(principal, claim, status="completed", error=None)
 

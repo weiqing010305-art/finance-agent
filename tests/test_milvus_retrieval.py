@@ -132,6 +132,25 @@ def test_hybrid_search_uses_two_requests_rrf_and_fail_closed_filter():
     assert "access_scope" in build_filter(request)
 
 
+def test_result_preserves_milvus_profile_and_index_for_identity_fencing():
+    class DriftedClient(FakeClient):
+        def hybrid_search(self, **kwargs):
+            rows = super().hybrid_search(**kwargs)
+            rows[0][0]["entity"]["embedding_profile_id"] = "drifted-profile"
+            rows[0][0]["entity"]["index_version"] = "drifted-index"
+            return rows
+
+    response = MilvusHybridRetriever(
+        MilvusConfig(uri="x", token=None), FakeEmbeddings(),
+        client=DriftedClient(), sdk_factory=_sdk,
+    ).search(RetrievalQuery(
+        query="现金流", top_k=5, candidate_k=20,
+        embedding_profile_id=FakeEmbeddings.profile.profile_id, index_version="idx-v1",
+    ))
+    assert response.results[0].embedding_profile_id == "drifted-profile"
+    assert response.results[0].index_version == "drifted-index"
+
+
 def test_one_route_failure_is_explicitly_degraded_and_both_fail_closed():
     import pytest
     from backend.milvus_retrieval import MilvusUnavailable

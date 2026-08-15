@@ -33,9 +33,11 @@ formal API -> persisted real_rag_local plan + outbox job
 ```
 
 An administrative one-shot indexer embeds a versioned fixture with the same
-pinned BGE profile, upserts Milvus first, then records byte-identical chunk
-identities in PostgreSQL. A Milvus-only orphan is unauthorized and harmless;
-replay verifies identity before returning success.
+pinned BGE profile, records its byte-identical authorization identities in
+PostgreSQL, then upserts Milvus. A failed or missing Milvus write
+is empty and safely retryable; replay verifies content hash and authority identity
+before returning any result. Rows from older schemas remain unauthorized until
+an explicit matching re-index adopts them.
 
 ## Failure, pause and recovery
 

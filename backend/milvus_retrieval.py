@@ -13,6 +13,7 @@ OUTPUT_FIELDS = [
     "chunk_id", "document_id", "document_version_id", "text", "title", "source_uri",
     "publisher", "source_type", "access_scope", "page", "section", "authority_tier",
     "published_at", "embedding_profile_id", "index_version",
+    "company", "symbol", "market", "period",
 ]
 
 
@@ -125,10 +126,20 @@ class MilvusHybridRetriever:
                 if dim is not None and int(dim) != self.config.dimension:
                     raise MilvusUnavailable("existing Milvus dense dimension is incompatible")
                 functions = description.get("functions") or description.get("schema", {}).get("functions") or []
-                if not any(
-                    "bm25" in str(fn.get("type") or fn.get("function_type") or fn.get("name", "")).lower()
-                    for fn in functions
-                ):
+                def is_expected_bm25(fn: dict) -> bool:
+                    raw_type = fn.get("type") or fn.get("function_type") or fn.get("name", "")
+                    try:
+                        recognized = "bm25" in str(raw_type).lower() or int(raw_type) == 1
+                    except (TypeError, ValueError):
+                        recognized = "bm25" in str(raw_type).lower()
+                    inputs = fn.get("input_field_names") or []
+                    outputs = fn.get("output_field_names") or []
+                    fields_match = not inputs and not outputs or (
+                        "text" in inputs and "sparse_vector" in outputs
+                    )
+                    return recognized and fields_match
+
+                if not any(is_expected_bm25(fn) for fn in functions):
                     raise MilvusUnavailable("existing Milvus collection lacks BM25 function")
                 indexes = client.list_indexes(collection_name=self.config.collection)
                 index_names = {
@@ -235,8 +246,8 @@ class MilvusHybridRetriever:
             **passthrough, page=entity.get("page") or None, fused_score=fused_score,
             dense_score=dense_score, sparse_score=sparse_score,
             dense_rank=dense_rank, sparse_rank=sparse_rank, rank=rank,
-            embedding_profile_id=request.embedding_profile_id,
-            index_version=request.index_version,
+            embedding_profile_id=str(entity["embedding_profile_id"]),
+            index_version=str(entity["index_version"]),
             authority_tier=int(entity.get("authority_tier") or 0),
         )
 
