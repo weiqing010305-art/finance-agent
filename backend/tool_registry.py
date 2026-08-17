@@ -115,6 +115,37 @@ class SearchToolResult(ToolResult):
     evidence: list[EvidenceRef] = Field(default_factory=list, max_length=100)
 
 
+class GetQuoteInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(min_length=1, max_length=32)
+    market: str = Field(default="", max_length=16)
+
+
+class QuoteItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    symbol: str
+    name: str
+    price: float | None = None
+    change: float | None = None
+    change_pct: float | None = None
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    prev_close: float | None = None
+    volume: float | None = None
+    turnover: float | None = None
+    turnover_rate: float | None = None
+    pe: float | None = None
+    pb: float | None = None
+    total_market_cap: float | None = None
+    time: str | None = None
+    source: str
+
+
+class QuoteResult(ToolResult):
+    data: list[QuoteItem] = Field(default_factory=list)
+
+
 class DocumentSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str
@@ -324,6 +355,7 @@ def build_default_registry(
 ) -> ToolRegistry:
     from backend.fact_extraction import extract_financial_facts
     from backend.financial_metrics import calculate_financial_metrics
+    from backend.quote_source import get_quote
     from backend.read_document import read_document_unconfigured
     from backend.web_search import search_filings, search_web
 
@@ -378,6 +410,15 @@ def build_default_registry(
             output_model=FinancialMetricsResult,
         ),
         calculate_financial_metrics,
+    )
+    registry.register(
+        ToolSpec(
+            name="get_quote", version="1", risk_level="low",
+            timeout_seconds=15, max_retries=2, idempotent=True, cost_class=1,
+            requires_confirmation=False, input_model=GetQuoteInput,
+            output_model=QuoteResult,
+        ),
+        get_quote,
     )
     registry.register(
         ToolSpec(
