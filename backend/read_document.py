@@ -1,18 +1,20 @@
 """Controlled document reading tool.
 
-``ReadDocumentTool`` reads persisted document versions from the repository
-(``document_versions.normalized_text``) and returns parsed sections with page
-and heading references. The model never sees the raw document store: it only
-receives bounded, sectioned excerpts through this registered read-only tool.
+``ReadDocumentTool`` reads persisted document versions through the
+document-domain repository (``document_versions.normalized_text``) and
+returns parsed sections with page and heading references. The model never
+sees the raw document store: it only receives bounded, sectioned excerpts
+through this registered read-only tool.
 
-Without an injected repository (e.g. in the default registry) the tool
-degrades explicitly instead of failing the run.
+Without an injected document repository (e.g. in the default registry) the
+tool degrades explicitly instead of failing the run.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from backend.db.document_repository import DocumentRepository
 from backend.documents import parse_sections
 from backend.tool_registry import (
     DocumentSection,
@@ -25,7 +27,7 @@ MAX_SECTION_CHARS = 10_000
 
 
 class ReadDocumentTool:
-    def __init__(self, repository: Any) -> None:
+    def __init__(self, repository: DocumentRepository) -> None:
         self.repository = repository
 
     async def __call__(

@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from backend.database import Repository
+from backend.db.document_repository import DocumentRepository
 from backend.documents import ingest_document
 from backend.read_document import ReadDocumentTool, read_document_unconfigured
 from backend.schemas import DocumentSource
@@ -54,7 +55,7 @@ def _ingest(repo: Repository, content: str = CONTENT) -> dict:
 
 
 def run_tool(repo: Repository, payload: dict) -> dict:
-    tool = ReadDocumentTool(repo)
+    tool = ReadDocumentTool(DocumentRepository(repo))
     return asyncio.run(tool(
         ReadDocumentInput.model_validate(payload)
     ))
@@ -131,7 +132,7 @@ def test_registry_wiring_with_injected_repository(tmp_path):
     repo.initialize()
     _ingest(repo)
 
-    tool = ReadDocumentTool(repo)
+    tool = ReadDocumentTool(DocumentRepository(repo))
     registry = build_default_registry(read_document_handler=tool)
     execution = asyncio.run(registry.execute(
         "read_document", {"company": "示例公司", "market": "CN"}
