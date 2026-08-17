@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -61,6 +62,133 @@ class ResearchExecutor:
             "completed_step_ids": sorted(completed),
         }
 
+    @staticmethod
+    def _completed_outputs(
+        snapshot: dict[str, Any], plan_version: int,
+    ) -> dict[str, dict[str, Any]]:
+        """Succeeded step outputs of the CURRENT plan version, keyed by step id.
+
+        Steps carry their step id inside the row id as ``{run_id}:{step_id}``
+        (see durable_runner.commit_step); only succeeded steps of the active
+        plan version feed downstream tool inputs, so a replan can never leak
+        stale observations from an older plan into the current one.
+        """
+        run_id = str(snapshot["run"]["id"])
+        outputs: dict[str, dict[str, Any]] = {}
+        for row in snapshot["steps"]:
+            if int(row.get("plan_version") or 0) != plan_version:
+                continue
+            if row.get("status") != "succeeded" or not row.get("output_json"):
+                continue
+            step_id = str(row["id"]).removeprefix(f"{run_id}:")
+            try:
+                output = json.loads(row["output_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(output, dict):
+                outputs[step_id] = output
+        return outputs
+
+    @staticmethod
+    def _collect_document_texts(
+        outputs: dict[str, dict[str, Any]],
+        *,
+        explicit: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Gather document/excerpt texts from succeeded tool outputs.
+
+        The explicit list (already supplied in the step input) wins; otherwise
+        every succeeded step's ``data`` items that carry extractable text
+        (document sections, retrieval chunks, search snippets) are collected
+        into ``{source_id, text}`` pairs bounded to the extractor contract.
+        """
+        if explicit:
+            return explicit
+        texts: list[dict[str, Any]] = []
+        for output in outputs.values():
+            data = output.get("data")
+            if not isinstance(data, list):
+                continue
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text") or item.get("snippet") or item.get("excerpt") or ""
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                source_id = (
+                    item.get("source_id")
+                    or item.get("url")
+                    or item.get("document_id")
+                    or item.get("chunk_id")
+                    or ""
+                )
+                if not source_id:
+                    continue
+                texts.append({
+                    "source_id": str(source_id)[:200],
+                    "text": text[:50_000],
+                })
+                if len(texts) >= 100:
+                    return texts
+        return texts
+
+    @staticmethod
+    def _collect_extracted_facts(
+        outputs: dict[str, dict[str, Any]],
+        *,
+        explicit: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Gather extracted financial facts for the metrics calculator.
+
+        A fact item is recognised structurally (name + period + value, without
+        a document ``text`` field), which excludes document sections, search
+        hits and already-computed metrics from being re-fed.
+        """
+        if explicit:
+            return explicit
+        facts: list[dict[str, Any]] = []
+        for output in outputs.values():
+            data = output.get("data")
+            if not isinstance(data, list):
+                continue
+            for item in data:
+                if not isinstance(item, dict) or item.get("text") is not None:
+                    continue
+                name = item.get("name")
+                period = item.get("period")
+                value = item.get("value")
+                if not name or not period or value is None:
+                    continue
+                facts.append({
+                    "name": str(name)[:100],
+                    "value": value,
+                    "period": str(period)[:40],
+                    "unit": str(item.get("unit") or "")[:20],
+                    "currency": str(item["currency"])[:16] if item.get("currency") else None,
+                })
+                if len(facts) >= 500:
+                    return facts
+        return facts
+
+    def _enrich_step_input(
+        self,
+        step: PlanStep,
+        outputs: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Compose the effective tool input for one ready step.
+
+        Downstream tools receive the observations of already-succeeded steps:
+        ``extract_financial_facts`` gets document texts, and
+        ``calculate_financial_metrics`` gets the extracted facts. Explicit
+        values already present in the planner's payload are never overwritten.
+        """
+        base = dict(step.input)
+        if step.tool_name == "extract_financial_facts":
+            base["texts"] = self._collect_document_texts(outputs, explicit=base.get("texts"))
+        elif step.tool_name == "calculate_financial_metrics":
+            base["facts"] = self._collect_extracted_facts(outputs, explicit=base.get("facts"))
+        return base
+
     async def execute_ready_batch(
         self,
         run_id: str,
@@ -106,9 +234,15 @@ class ResearchExecutor:
 
         reused: dict[str, dict[str, Any]] = {}
         calls: list[tuple[PlanStep, dict[str, Any], asyncio.Task[ToolExecution]]] = []
+        completed_outputs = self._completed_outputs(snapshot, plan.version)
+        enriched_inputs: dict[str, dict[str, Any]] = {
+            step.id: self._enrich_step_input(step, completed_outputs)
+            for step in ready
+        }
         for step in ready:
             self.runner.renew_lease(run_id, lease_token=lease_token)
             idempotency_key = f"plan:{plan.version}:step:{step.id}"
+            step_input = enriched_inputs[step.id]
             cached = self.runner.repository.get_completed_step_output(run_id, idempotency_key)
             if cached is not None:
                 reused[step.id] = cached
@@ -133,7 +267,7 @@ class ResearchExecutor:
                         idempotency_key=claim["idempotency_key"],
                     )
                     calls.append((step, claim, asyncio.create_task(
-                        self.registry.execute(step.tool_name, step.input, context=context)
+                        self.registry.execute(step.tool_name, step_input, context=context)
                     )))
 
         async def heartbeat() -> None:
