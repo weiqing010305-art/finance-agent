@@ -44,16 +44,43 @@ class SearchWebInput(GenericToolInput):
 class ReadDocumentInput(GenericToolInput):
     model_config = ConfigDict(extra="forbid")
     selection: str = Field(default="top_authoritative", max_length=80)
+    version_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class DocumentTextInput(BaseModel):
+    """A document excerpt supplied to extraction tools, bound to its source."""
+
+    model_config = ConfigDict(extra="forbid")
+    source_id: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=100_000)
 
 
 class ExtractFinancialFactsInput(GenericToolInput):
     model_config = ConfigDict(extra="forbid")
     periods: int = Field(default=3, ge=1, le=20)
+    texts: list[DocumentTextInput] = Field(default_factory=list, max_length=100)
+
+
+class FinancialFactInput(BaseModel):
+    """One financial statement line item supplied to the metrics calculator.
+
+    Mirrors FinancialFact but without a required source binding, so callers can
+    pass extracted figures directly. Values may arrive as strings from
+    extraction pipelines ("1,234.5") and are normalised by the calculator.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=100)
+    value: float | int | str
+    period: str = Field(min_length=1, max_length=40)
+    unit: str = Field(default="", max_length=20)
+    currency: str | None = Field(default=None, max_length=16)
 
 
 class CalculateFinancialMetricsInput(GenericToolInput):
     model_config = ConfigDict(extra="forbid")
     metrics: list[str] = Field(default_factory=list, max_length=30)
+    facts: list[FinancialFactInput] = Field(default_factory=list, max_length=500)
 
 
 class ToolResult(BaseModel):
@@ -277,13 +304,6 @@ class ToolRegistry:
         )
 
 
-async def _unconfigured(_payload: BaseModel) -> dict[str, Any]:
-    return {
-        "status": "empty", "data": [], "evidence": [], "degraded": True,
-        "degraded_reason": "tool adapter is not configured", "fallback_used": None,
-    }
-
-
 async def _unconfigured_hybrid(_payload: BaseModel) -> dict[str, Any]:
     return {
         "status": "empty", "data": [], "evidence": [], "degraded": True,
@@ -296,24 +316,69 @@ async def _unconfigured_hybrid(_payload: BaseModel) -> dict[str, Any]:
     }
 
 
-def build_default_registry(*, retrieval_handler: ToolHandler | None = None) -> ToolRegistry:
+def build_default_registry(
+    *,
+    retrieval_handler: ToolHandler | None = None,
+    read_document_handler: ToolHandler | None = None,
+    search_handlers: dict[str, ToolHandler] | None = None,
+) -> ToolRegistry:
+    from backend.fact_extraction import extract_financial_facts
+    from backend.financial_metrics import calculate_financial_metrics
+    from backend.read_document import read_document_unconfigured
+    from backend.web_search import search_filings, search_web
+
     registry = ToolRegistry()
-    for name, cost, input_model, output_model in (
-        ("search_filings", 2, SearchFilingsInput, SearchToolResult),
-        ("search_web", 3, SearchWebInput, SearchToolResult),
-        ("read_document", 2, ReadDocumentInput, ReadDocumentResult),
-        ("extract_financial_facts", 3, ExtractFinancialFactsInput, FinancialFactsResult),
-        ("calculate_financial_metrics", 1, CalculateFinancialMetricsInput, FinancialMetricsResult),
-    ):
-        registry.register(
-            ToolSpec(
-                name=name, version="1", risk_level="low", timeout_seconds=20,
-                max_retries=2, idempotent=True, cost_class=cost,
-                requires_confirmation=False, input_model=input_model,
-                output_model=output_model,
-            ),
-            _unconfigured,
-        )
+
+    def wired(name: str, handler: ToolHandler) -> ToolHandler:
+        if search_handlers and name in search_handlers:
+            return search_handlers[name]
+        return handler
+
+    registry.register(
+        ToolSpec(
+            name="extract_financial_facts", version="1", risk_level="low",
+            timeout_seconds=10, max_retries=1, idempotent=True, cost_class=3,
+            requires_confirmation=False, input_model=ExtractFinancialFactsInput,
+            output_model=FinancialFactsResult,
+        ),
+        extract_financial_facts,
+    )
+    registry.register(
+        ToolSpec(
+            name="read_document", version="1", risk_level="low",
+            timeout_seconds=10, max_retries=1, idempotent=True, cost_class=2,
+            requires_confirmation=False, input_model=ReadDocumentInput,
+            output_model=ReadDocumentResult,
+        ),
+        read_document_handler or read_document_unconfigured,
+    )
+    registry.register(
+        ToolSpec(
+            name="search_web", version="1", risk_level="low",
+            timeout_seconds=60, max_retries=2, idempotent=True, cost_class=3,
+            requires_confirmation=False, input_model=SearchWebInput,
+            output_model=SearchToolResult,
+        ),
+        wired("search_web", search_web),
+    )
+    registry.register(
+        ToolSpec(
+            name="search_filings", version="1", risk_level="low",
+            timeout_seconds=60, max_retries=2, idempotent=True, cost_class=2,
+            requires_confirmation=False, input_model=SearchFilingsInput,
+            output_model=SearchToolResult,
+        ),
+        wired("search_filings", search_filings),
+    )
+    registry.register(
+        ToolSpec(
+            name="calculate_financial_metrics", version="1", risk_level="low",
+            timeout_seconds=10, max_retries=1, idempotent=True, cost_class=1,
+            requires_confirmation=False, input_model=CalculateFinancialMetricsInput,
+            output_model=FinancialMetricsResult,
+        ),
+        calculate_financial_metrics,
+    )
     registry.register(
         ToolSpec(
             name="retrieve_documents", version="1", risk_level="low",
