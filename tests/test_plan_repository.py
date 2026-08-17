@@ -29,7 +29,7 @@ def test_install_plan_is_versioned_idempotent_and_checkpoints_frontier(tmp_path)
     assert replay["counts"] == snapshot["counts"]
     assert snapshot["checkpoint"]["frontier"]["plan_version"] == 2
     assert set(snapshot["checkpoint"]["frontier"]["ready_step_ids"]) == {
-        "search_filings", "search_web", "retrieve_documents"
+        "search_filings", "search_web", "retrieve_documents", "get_quote"
     }
     assert snapshot["events"][-1]["kind"] == "plan.created"
 

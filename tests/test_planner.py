@@ -13,7 +13,7 @@ def entity():
     )
 
 
-@pytest.mark.parametrize("depth,min_steps", [("quick", 4), ("standard", 5), ("deep", 6)])
+@pytest.mark.parametrize("depth,min_steps", [("quick", 5), ("standard", 6), ("deep", 7)])
 def test_planner_builds_valid_dynamic_dag_with_hybrid_retrieval(entity, depth, min_steps):
     plan = DeterministicPlanner().create_plan(
         question="分析腾讯盈利质量和现金流", entity=entity, depth=depth, budget_limit=30

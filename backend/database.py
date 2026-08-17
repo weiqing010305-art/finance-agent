@@ -31,7 +31,7 @@ LEGAL_TRANSITIONS = {
 }
 REGISTERED_RESEARCH_TOOLS = {
     "search_filings", "search_web", "retrieve_documents", "read_document",
-    "extract_financial_facts", "calculate_financial_metrics",
+    "extract_financial_facts", "calculate_financial_metrics", "get_quote",
 }
 
 

@@ -31,8 +31,10 @@ from backend.tool_registry import (
     ExtractFinancialFactsInput,
     FinancialFactsResult,
     FinancialMetricsResult,
+    GetQuoteInput,
     HybridRetrievalInput,
     HybridRetrievalResult,
+    QuoteResult,
     SearchFilingsInput,
     SearchToolResult,
     ToolRegistry,
@@ -45,6 +47,7 @@ INPUT_MODELS = {
     "retrieve_documents": HybridRetrievalInput,
     "extract_financial_facts": ExtractFinancialFactsInput,
     "calculate_financial_metrics": CalculateFinancialMetricsInput,
+    "get_quote": GetQuoteInput,
 }
 OUTPUT_MODELS = {
     "search_filings": SearchToolResult,
@@ -52,6 +55,7 @@ OUTPUT_MODELS = {
     "retrieve_documents": HybridRetrievalResult,
     "extract_financial_facts": FinancialFactsResult,
     "calculate_financial_metrics": FinancialMetricsResult,
+    "get_quote": QuoteResult,
 }
 
 
@@ -127,14 +131,18 @@ def test_extract_receives_upstream_search_texts(tmp_path):
     async def calculate_financial_metrics(payload):
         return {"status": "empty", "data": []}
 
+    async def get_quote(payload):
+        return {"status": "empty", "data": []}
+
     repo, _runner, created, _plan, executor = build_executor(tmp_path, handlers={
         "search_filings": search_filings,
         "retrieve_documents": retrieve_documents,
         "extract_financial_facts": extract_financial_facts,
         "calculate_financial_metrics": calculate_financial_metrics,
+        "get_quote": get_quote,
     })
     first = run_batch(executor, created)
-    assert set(first.executed_step_ids) == {"search_filings", "retrieve_documents"}
+    assert set(first.executed_step_ids) == {"search_filings", "retrieve_documents", "get_quote"}
     run_batch(executor, created)  # extract_facts becomes ready
 
     assert len(calls["extract"]) == 1
@@ -170,11 +178,15 @@ def test_calculate_receives_extracted_facts(tmp_path):
         calls["calculate"].append(payload.model_dump())
         return {"status": "ok", "data": [], "evidence": []}
 
+    async def get_quote(payload):
+        return {"status": "empty", "data": []}
+
     repo, _runner, created, _plan, executor = build_executor(tmp_path, handlers={
         "search_filings": search_filings,
         "retrieve_documents": retrieve_documents,
         "extract_financial_facts": extract_financial_facts,
         "calculate_financial_metrics": calculate_financial_metrics,
+        "get_quote": get_quote,
     })
     run_batch(executor, created)   # search + retrieve
     run_batch(executor, created)   # extract

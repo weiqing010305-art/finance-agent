@@ -205,7 +205,7 @@ finance agent/
 
 - **formal 生产路径仍是合成 fixture**：`real_rag_local` 跑的是真实 BGE 向量 + Milvus 检索，但语料是带标签的本地演示数据，**不调用实时金融源、也不调用 LLM**，因此不构成真实投资研究。
 - **旧原型 DeepSeek 联网搜索是迁移期能力**：模型直连搜索，尚未接入受控 Tool Registry（长期架构要求「模型只能通过受控只读工具检索」）。
-- **受控工具已全部接线为真实实现（能力取决于运行时配置）**：`search_web` 通过 DeepSeek Responses 的 `web_search` 执行（需 `DEEPSEEK_API_KEY`，未配置时显式降级）；`search_filings` 对 A 股公司**直连巨潮资讯公告 API**（官方披露平台、无需 key、返回结构化公告），港股或巨潮失败时降级为官方域名白名单网页搜索（`degraded` + `fallback_used=web_search` 显式标记）；`get_quote` 直连腾讯免费行情（A 股/港股/美股，GBK 字段解析为确定性数值：现价、涨跌、PE/PB、市值等）；`read_document` 从持久化文档库读取分节内容（需注入 repository，默认降级）；`extract_financial_facts` 用确定性规则从文本抽取带期间/单位/来源的财务事实；`calculate_financial_metrics` 用纯 Python 公式计算指标并回链输入科目；`retrieve_documents` 接入真实 Milvus 混合检索。所有工具在缺输入/缺配置时返回显式 `degraded`，不静默伪造结果。
+- **受控工具已全部接线为真实实现（能力取决于运行时配置）**：`search_web` 通过 DeepSeek Responses 的 `web_search` 执行（需 `DEEPSEEK_API_KEY`，未配置时显式降级）；`search_filings` 对 A 股公司**直连巨潮资讯公告 API**（官方披露平台、无需 key、返回结构化公告），港股或巨潮失败时降级为官方域名白名单网页搜索（`degraded` + `fallback_used=web_search` 显式标记）；`get_quote` 直连腾讯免费行情（A 股/港股/美股，GBK 字段解析为确定性数值：现价、涨跌、PE/PB、市值等），且已由 Planner 纳入研究计划（与财报检索并行执行，实测返回真实行情）；`read_document` 从持久化文档库读取分节内容（需注入 repository，默认降级）；`extract_financial_facts` 用确定性规则从文本抽取带期间/单位/来源的财务事实；`calculate_financial_metrics` 用纯 Python 公式计算指标并回链输入科目；`retrieve_documents` 接入真实 Milvus 混合检索。所有工具在缺输入/缺配置时返回显式 `degraded`，不静默伪造结果。
 - **数据源均为非官方授权公开接口，存在限流与格式变化风险**：巨潮公告 API 与腾讯行情按失败降级处理，可用 `scripts\verify_filings_source.py` / `scripts\verify_quote.py` 做真实调用冒烟验证；尚未接入财务数据（财报科目）等数据源 API。
 - 前端仍是 HTML 原型，正式 API 的用户可见界面（参考文献端点、双账号隔离演示）刚补齐，多 Agent 并行尚未启用。
 

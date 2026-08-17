@@ -61,11 +61,11 @@ def test_executor_runs_ready_frontier_and_commits_each_checkpoint(tmp_path):
         created.run["id"], lease_token=created.lease_token,
         route=route(), entity_confirmed=True, budget_limit=30,
     ))
-    assert set(result.executed_step_ids) == {"search_filings", "retrieve_documents"}
+    assert set(result.executed_step_ids) == {"search_filings", "retrieve_documents", "get_quote"}
     snapshot = repository.get_runtime_snapshot(created.run["id"])
-    assert snapshot["counts"]["steps"] == 2
-    assert snapshot["counts"]["tool_calls"] == 2
-    assert snapshot["run"]["budget_used"] == 4
+    assert snapshot["counts"]["steps"] == 3
+    assert snapshot["counts"]["tool_calls"] == 3
+    assert snapshot["run"]["budget_used"] == 5
     assert "extract_facts" in snapshot["checkpoint"]["frontier"]["ready_step_ids"]
 
 
@@ -211,8 +211,8 @@ def test_concurrent_executor_has_single_tool_claim_owner(tmp_path):
         list(pool.map(lambda _item: execute(), range(2)))
     with repository.connect() as connection:
         claims = connection.execute("SELECT COUNT(*) FROM tool_execution_claims").fetchone()[0]
-    assert claims == 2
-    assert len(calls) == 2
+    assert claims == 3
+    assert len(calls) == 3
 
 
 def test_executor_heartbeats_during_slow_tool_batch(tmp_path):
@@ -249,7 +249,7 @@ def test_executor_heartbeats_during_slow_tool_batch(tmp_path):
         created.run["id"], lease_token=created.lease_token,
         route=route(), entity_confirmed=True, budget_limit=30,
     ))
-    assert len(result.executed_step_ids) == 2
+    assert len(result.executed_step_ids) == 3
 
 
 def test_phase3_tool_step_commit_cannot_bypass_or_forge_authorized_observation(tmp_path):

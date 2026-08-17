@@ -35,6 +35,13 @@ class DeterministicPlanner:
                 estimated_cost=2,
             ),
             PlanStep(
+                id="get_quote",
+                tool_name="get_quote",
+                input={"symbol": entity.symbol or "", "market": entity.market or ""},
+                success_criteria=["fetch one deterministic quote for the confirmed security"],
+                estimated_cost=1,
+            ),
+            PlanStep(
                 id="search_web",
                 tool_name="search_web",
                 input={**common, "domains": [], "max_results": 8},

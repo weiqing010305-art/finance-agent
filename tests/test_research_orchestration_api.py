@@ -45,7 +45,7 @@ def test_exact_entity_route_executes_through_verified_report_completion(tmp_path
         assert task["result"]["degraded"] is True
         snapshot = app.state.repository.get_runtime_snapshot(intake["run_id"])
         assert snapshot["plan"]["version"] == 1
-        assert snapshot["counts"]["tool_calls"] == 4
+        assert snapshot["counts"]["tool_calls"] == 5
         assert all(item["status"] == "succeeded" for item in snapshot["tool_calls"])
         events = app.state.repository.list_events(intake["run_id"])
         assert sum(item["kind"] == "report.delta" for item in events) == 2
