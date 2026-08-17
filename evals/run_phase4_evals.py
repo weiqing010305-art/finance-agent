@@ -88,6 +88,85 @@ def _retrieval_metrics(cases, retriever, profile_id):
     }
 
 
+def _verification_metrics() -> dict[str, Any]:
+    """Measure the verifier on MIXED-QUALITY inputs instead of a hand-picked
+    always-perfect set.
+
+    The previous smoke asserted every metric equals 1.0 on inputs crafted to
+    pass — self-grading that could never catch a regression. Here the claim
+    set mixes supported claims with fabricated numbers, evidence-free claims
+    and a conflicting source, and the metrics report how the system actually
+    behaves: the quality properties (catch rate, false-support rate,
+    conflict disclosure) must stay perfect, while the honest rates
+    (supported_rate, citation coverage) reflect the input mix and must NOT
+    trivially be 1.0.
+    """
+    builder = EvidenceBuilder()
+    evidence = builder.build_retrieval_items("eval", [{
+        "text": "2024年收入增长10%。", "source_uri": "https://example.com/report",
+        "title": "年报", "publisher": "交易所", "authority_tier": 5, "period": "2024",
+    }])[0]
+    conflicting = builder.build_retrieval_items("eval", [{
+        "text": "2024年收入增长10%，与上年披露冲突。", "source_uri": "https://example.com/other",
+        "title": "另一来源", "publisher": "财经媒体", "authority_tier": 3, "period": "2024",
+    }])[0]
+
+    verifier = ClaimVerifier()
+    claims = verifier.verify([
+        ClaimCandidate(
+            id="supported", run_id="eval", text="2024年收入增长10%",
+            evidence_ids=[evidence.id], period="2024", unit="%",
+        ),
+        ClaimCandidate(
+            id="fabricated_number", run_id="eval", text="2024年收入增长99%",
+            evidence_ids=[evidence.id], period="2024", unit="%",
+        ),
+        ClaimCandidate(
+            id="no_evidence", run_id="eval", text="2024年收入增长10%",
+            evidence_ids=[], period="2024", unit="%",
+        ),
+        ClaimCandidate(
+            id="fabricated_no_evidence", run_id="eval", text="2025年利润翻倍",
+            evidence_ids=[], period="2025", unit="%",
+        ),
+        ClaimCandidate(
+            id="conflicting", run_id="eval", text="2024年收入增长10%",
+            evidence_ids=[conflicting.id], period="2024", unit="%",
+        ),
+    ], [evidence, conflicting], allowed_access_scopes={"public"})
+    by_id = {item.id: item for item in claims}
+
+    unsupported_set = {"fabricated_number", "no_evidence", "fabricated_no_evidence"}
+    caught = sum(by_id[item].status == "unsupported" for item in unsupported_set)
+    false_support = sum(
+        by_id[item].status in {"supported", "partially_supported"}
+        for item in unsupported_set
+    )
+    conflict_disclosed = int(by_id["conflicting"].status == "conflicted")
+
+    reportable = [item for item in claims if item.status in {"supported", "partially_supported"}]
+    reporter = CitationConstrainedReporter()
+    draft = reporter.build_deterministic(
+        company="示例公司", question="收入", claims=claims, evidence=[evidence, conflicting]
+    )
+    _markdown, _json_report, citations = reporter.render(
+        draft, claims, [evidence, conflicting]
+    )
+    cited_claims = {item["claim_id"] for item in citations}
+    coverage = len(cited_claims) / len(reportable) if reportable else 1.0
+
+    return {
+        "verification_case_count": len(claims),
+        "supported_rate": (
+            sum(item.status == "supported" for item in claims) / len(claims)
+        ),
+        "unsupported_caught_rate": caught / len(unsupported_set),
+        "false_support_rate": false_support / len(unsupported_set),
+        "conflict_disclosure_rate": conflict_disclosed,
+        "verification_citation_coverage": round(coverage, 4),
+    }
+
+
 def evaluate(cases_path: Path = CASES) -> dict[str, Any]:
     cases = json.loads(cases_path.read_text(encoding="utf-8"))
     embedding = EvalHashEmbeddings()
@@ -129,6 +208,7 @@ def evaluate(cases_path: Path = CASES) -> dict[str, Any]:
         "numeric_provenance_rate": float(claims[0].status == "supported" and claims[1].status == "unsupported"),
         "real_milvus_executed": False,
         "model_profile": embedding.profile.profile_id,
+        **_verification_metrics(),
     }
 
 
