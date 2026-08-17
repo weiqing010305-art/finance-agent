@@ -247,16 +247,43 @@ async def search_filings(
     context: Any = None,
     *,
     _client: DeepSeekWebSearch | None = None,
+    _filings_source: Any = None,
 ) -> dict[str, Any]:
-    """Search official disclosure sources only.
+    """Search official filings, real source first, web-search fallback.
 
-    The query is restricted to a fixed domain allowlist (exchanges, regulators,
-    designated disclosure platforms) by post-filtering every returned URL, so
-    filings can never surface arbitrary web pages.
+    For A-share companies the real cninfo announcement API (巨潮资讯) is the
+    primary source: it returns structured official filings without an API key.
+    Any failure — no coverage for the market, an API error, or an empty
+    result — degrades to the domain-allowlisted web search, which is flagged
+    via ``degraded``/``fallback_used`` so callers can tell the difference.
     """
+    from backend.filings_source import CninfoFilingsSource, FilingSourceError
+
+    fallback_reason: str | None = None
+    primary_covered = payload.market in {None, "", "CN", "A", "CN_A", "SZSE", "SSE"}
+    if primary_covered:
+        source = _filings_source if _filings_source is not None else CninfoFilingsSource()
+        try:
+            hits = await source.search(
+                company=payload.company,
+                symbol=payload.symbol,
+                document_types=payload.document_types,
+                max_results=20,
+            )
+            if hits:
+                return _to_hit_result(hits)
+            fallback_reason = "cninfo returned no announcements for the confirmed entity"
+        except FilingSourceError as exc:
+            fallback_reason = f"cninfo filings API failed: {exc}"
+    else:
+        fallback_reason = f"cninfo does not cover market {payload.market}"
+
     client = _client or DeepSeekWebSearch.from_env()
     if client is None:
-        return _unavailable_result("DEEPSEEK_API_KEY is not configured; filings search unavailable")
+        return _unavailable_result(
+            f"filings source unavailable ({fallback_reason}); "
+            "DEEPSEEK_API_KEY is not configured for the web fallback"
+        )
     parts = [payload.question or ""]
     if payload.company:
         parts.append(payload.company)
@@ -276,8 +303,12 @@ async def search_filings(
         if _is_official_filing_domain(urlparse(hit.url).netloc)
     ]
     if not official:
-        return _unavailable_result("no official-disclosure results found")
-    return _to_hit_result(official[:20])
+        return _unavailable_result(f"no official-disclosure results found ({fallback_reason})")
+    result = _to_hit_result(official[:20])
+    result["degraded"] = True
+    result["degraded_reason"] = f"filings primary source degraded: {fallback_reason}"
+    result["fallback_used"] = "web_search"
+    return result
 
 
 def build_search_tools(

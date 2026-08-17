@@ -205,8 +205,8 @@ finance agent/
 
 - **formal 生产路径仍是合成 fixture**：`real_rag_local` 跑的是真实 BGE 向量 + Milvus 检索，但语料是带标签的本地演示数据，**不调用实时金融源、也不调用 LLM**，因此不构成真实投资研究。
 - **旧原型 DeepSeek 联网搜索是迁移期能力**：模型直连搜索，尚未接入受控 Tool Registry（长期架构要求「模型只能通过受控只读工具检索」）。
-- **受控工具已全部接线为真实实现（能力取决于运行时配置）**：`search_web` / `search_filings` 通过 DeepSeek Responses 的 `web_search` 执行（`search_filings` 强制官方披露域名白名单），配置 `DEEPSEEK_API_KEY` 后可用，未配置时显式降级；`read_document` 从持久化文档库读取分节内容（需注入 repository，默认降级）；`extract_financial_facts` 用确定性规则从文本抽取带期间/单位/来源的财务事实；`calculate_financial_metrics` 用纯 Python 公式计算指标并回链输入科目；`retrieve_documents` 接入真实 Milvus 混合检索。所有工具在缺输入/缺配置时返回显式 `degraded`，不静默伪造结果。
-- 尚未接入实时行情 / 财报 / 监管披露等数据源 API（`search_filings` 目前依赖公开网页搜索的官方域名过滤，未直连交易所 API）。
+- **受控工具已全部接线为真实实现（能力取决于运行时配置）**：`search_web` 通过 DeepSeek Responses 的 `web_search` 执行（需 `DEEPSEEK_API_KEY`，未配置时显式降级）；`search_filings` 对 A 股公司**直连巨潮资讯公告 API**（官方披露平台、无需 key、返回结构化公告），港股或巨潮失败时降级为官方域名白名单网页搜索（`degraded` + `fallback_used=web_search` 显式标记）；`read_document` 从持久化文档库读取分节内容（需注入 repository，默认降级）；`extract_financial_facts` 用确定性规则从文本抽取带期间/单位/来源的财务事实；`calculate_financial_metrics` 用纯 Python 公式计算指标并回链输入科目；`retrieve_documents` 接入真实 Milvus 混合检索。所有工具在缺输入/缺配置时返回显式 `degraded`，不静默伪造结果。
+- 尚未接入实时行情 / 财务数据等数据源 API（巨潮公告源为「网页查询 API」而非官方授权接口，存在限流与格式变化风险，调用方按失败降级处理；可用 `scripts\verify_filings_source.py` 做真实调用冒烟验证）。
 - 前端仍是 HTML 原型，正式 API 的用户可见界面（参考文献端点、双账号隔离演示）刚补齐，多 Agent 并行尚未启用。
 
 ## 架构文档索引

@@ -59,9 +59,18 @@ def run_search_web(client, payload):
     ))
 
 
-def run_filings(client, payload):
+class EmptyFilingsSource:
+    """Forces the web-search fallback branch in filings tests (no real network)."""
+
+    async def search(self, *, company=None, symbol=None, document_types=None, max_results=20):
+        return []
+
+
+def run_filings(client, payload, source=None):
     return asyncio.run(search_filings(
-        SearchFilingsInput.model_validate(payload), _client=client
+        SearchFilingsInput.model_validate(payload),
+        _client=client,
+        _filings_source=source if source is not None else EmptyFilingsSource(),
     ))
 
 
