@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
@@ -16,19 +16,16 @@ from backend.schemas import (
 )
 
 
-TERMINAL_STATUSES = {"completed", "failed"}
-SIX_RUN_STATES = {
-    "running", "pause_requested", "paused", "resuming", "failed", "completed"
-}
-LEGAL_TRANSITIONS = {
-    ("running", "pause_requested"),
-    ("pause_requested", "paused"),
-    ("paused", "resuming"),
-    ("resuming", "running"),
-    ("running", "failed"),
-    ("pause_requested", "failed"),
-    ("resuming", "failed"),
-}
+from backend.run_states import (
+    RUN_STATES,
+    RUN_STATE_TRANSITIONS,
+    TERMINAL_RUN_STATES,
+)
+
+
+TERMINAL_STATUSES = TERMINAL_RUN_STATES
+SIX_RUN_STATES = RUN_STATES
+LEGAL_TRANSITIONS = RUN_STATE_TRANSITIONS
 REGISTERED_RESEARCH_TOOLS = {
     "search_filings", "search_web", "retrieve_documents", "read_document",
     "extract_financial_facts", "calculate_financial_metrics", "get_quote",
@@ -2006,8 +2003,16 @@ class Repository:
         owner_id: str,
         lease_token: str,
         expires_at: str,
+        grace_seconds: float = 0.0,
     ) -> tuple[dict[str, Any], str]:
         now = utc_now()
+        # A lease must stay expired for at least ``grace_seconds`` before a new
+        # owner may claim it. This gives a still-alive worker (whose heartbeat
+        # merely lagged) time to renew or wind down instead of having its
+        # renew/commit calls rejected by an immediate takeover.
+        cutoff = (
+            datetime.fromisoformat(now) - timedelta(seconds=max(0.0, grace_seconds))
+        ).isoformat()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             run = connection.execute(
@@ -2020,8 +2025,8 @@ class Repository:
             lease = connection.execute(
                 "SELECT * FROM run_leases WHERE run_id = ?", (run_id,)
             ).fetchone()
-            if lease is not None and lease["expires_at"] > now:
-                raise PermissionError("run still has an active lease")
+            if lease is not None and lease["expires_at"] > cutoff:
+                raise PermissionError("run still has an active lease (or is within grace)")
             cursor = connection.execute(
                 """
                 UPDATE agent_runs

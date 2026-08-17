@@ -319,9 +319,18 @@ def test_expired_lease_cannot_transition_or_write_runtime_data(runner):
 
 def test_repository_rejects_illegal_edges_and_invalid_raw_status(runner):
     created = runner.create_run(request(), owner_id="worker", idempotency_key="edges")
-    with pytest.raises(ValueError, match="illegal state edge"):
+    # running -> completed is a legal edge (single source of truth); emitting
+    # it without the full completion side effects is rejected by the
+    # completion trigger rather than the edge guard.
+    with pytest.raises(sqlite3.IntegrityError, match="completed run requires result"):
         runner.repository.cas_transition(
             created.run["id"], from_statuses=("running",), to_status="completed",
+            kind="bad", message="bad",
+        )
+    # resuming -> paused is not a legal edge: the CAS guard rejects it.
+    with pytest.raises(ValueError, match="illegal state edge"):
+        runner.repository.cas_transition(
+            created.run["id"], from_statuses=("resuming",), to_status="paused",
             kind="bad", message="bad",
         )
     with pytest.raises(sqlite3.IntegrityError, match="invalid agent run status"):

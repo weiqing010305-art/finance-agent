@@ -15,10 +15,77 @@ def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
+def _split_sql_statements(script: str) -> list[str]:
+    """Split SQL on top-level semicolons, ignoring those inside string
+    literals ('' escaped), ``--`` line comments and ``/* */`` block comments.
+
+    A naive ``script.split(';')`` breaks any statement whose string literal
+    or comment contains a semicolon, silently corrupting the migration.
+    """
+    statements: list[str] = []
+    current: list[str] = []
+    in_string = False
+    in_line_comment = False
+    in_block_comment = False
+    index = 0
+    length = len(script)
+    while index < length:
+        char = script[index]
+        nxt = script[index + 1] if index + 1 < length else ""
+        if in_block_comment:
+            current.append(char)
+            if char == "*" and nxt == "/":
+                current.append(nxt)
+                index += 1
+                in_block_comment = False
+            index += 1
+            continue
+        if in_line_comment:
+            current.append(char)
+            if char == "\n":
+                in_line_comment = False
+            index += 1
+            continue
+        if in_string:
+            current.append(char)
+            if char == "'":
+                if nxt == "'":  # '' escaped quote inside the literal
+                    current.append(nxt)
+                    index += 1
+                else:
+                    in_string = False
+            index += 1
+            continue
+        if char == "-" and nxt == "-":
+            in_line_comment = True
+            current.append(char)
+            index += 1
+            continue
+        if char == "/" and nxt == "*":
+            in_block_comment = True
+            current.append(char)
+            index += 1
+            continue
+        if char == "'":
+            in_string = True
+            current.append(char)
+            index += 1
+            continue
+        if char == ";":
+            statements.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    if current:
+        statements.append("".join(current))
+    return [statement.strip() for statement in statements if statement.strip()]
+
+
 def _execute_statements(connection: sqlite3.Connection, script: str) -> None:
-    for statement in script.split(";"):
-        if statement.strip():
-            connection.execute(statement)
+    for statement in _split_sql_statements(script):
+        connection.execute(statement)
 
 
 def _create_base_schema(connection: sqlite3.Connection) -> None:
@@ -268,22 +335,32 @@ def _add_transition_guards(connection: sqlite3.Connection) -> None:
     if not _column_exists(connection, "run_steps", "commit_fingerprint"):
         connection.execute("ALTER TABLE run_steps ADD COLUMN commit_fingerprint TEXT")
     allowed = "'running','pause_requested','paused','resuming','failed','completed'"
+    # Generated from the shared state-machine constant so the trigger can
+    # never drift from the Python CAS guards (see backend/run_states.py).
+    from collections import defaultdict
+    from backend.run_states import RECOVERY_TRANSITIONS, RUN_STATE_TRANSITIONS
+
+    def clauses(edges) -> str:
+        by_old: dict[str, list[str]] = defaultdict(list)
+        for old, new in sorted(edges):
+            by_old[old].append(new)
+        parts = []
+        for old in sorted(by_old):
+            news = ", ".join(f"'{n}'" for n in sorted(set(by_old[old])))
+            parts.append(f"(OLD.status = '{old}' AND NEW.status IN ({news}))")
+        return " OR ".join(parts)
+
+    normal_edges = clauses(RUN_STATE_TRANSITIONS)
+    recovery_edges = clauses(RECOVERY_TRANSITIONS)
     connection.execute(
         f"""
         CREATE TRIGGER IF NOT EXISTS validate_agent_run_state_edge
         BEFORE UPDATE OF status ON agent_runs
         WHEN NEW.status IN ({allowed})
           AND NEW.status != OLD.status AND NOT (
-            (OLD.status = 'running' AND NEW.status IN ('pause_requested','failed','completed')) OR
-            (OLD.status = 'pause_requested' AND NEW.status IN ('paused','failed')) OR
-            (OLD.status = 'paused' AND NEW.status = 'resuming') OR
-            (OLD.status = 'resuming' AND NEW.status IN ('running','failed')) OR
-            (
-                OLD.status IN ('running','pause_requested')
-                AND NEW.status = 'resuming'
-                AND NEW.recovery_required = 1
-            )
-        )
+            ({normal_edges}) OR
+            ({recovery_edges} AND NEW.recovery_required = 1)
+          )
         BEGIN
             SELECT RAISE(ABORT, 'illegal agent run state transition');
         END

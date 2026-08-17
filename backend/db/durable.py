@@ -17,14 +17,10 @@ from backend.db.metadata import (
     research_plans_pg, research_runs_pg, research_steps_pg,
 )
 from backend.db.session import principal_transaction
+from backend.run_states import RUN_STATE_TRANSITIONS
 
 
-LEGAL_EDGES = {
-    ("running", "pause_requested"), ("pause_requested", "paused"),
-    ("paused", "resuming"), ("resuming", "running"),
-    ("running", "completed"), ("running", "failed"),
-    ("pause_requested", "failed"), ("resuming", "failed"),
-}
+LEGAL_EDGES = RUN_STATE_TRANSITIONS
 
 
 def _now() -> datetime: return datetime.now(timezone.utc)

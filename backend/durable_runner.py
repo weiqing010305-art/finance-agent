@@ -5,18 +5,11 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from backend.database import Repository
+from backend.run_states import RUN_STATES, TERMINAL_RUN_STATES
 from backend.schemas import ResearchCreate
 
 
-SIX_RUN_STATES = {
-    "running",
-    "pause_requested",
-    "paused",
-    "resuming",
-    "failed",
-    "completed",
-}
-TERMINAL_RUN_STATES = {"failed", "completed"}
+SIX_RUN_STATES = RUN_STATES
 
 
 class RunConflict(RuntimeError):
@@ -239,7 +232,7 @@ class DurableRunner:
         except PermissionError as exc:
             raise RunConflict(str(exc)) from exc
 
-    def take_over_expired_run(self, run_id: str, *, owner_id: str) -> dict:
+    def take_over_expired_run(self, run_id: str, *, owner_id: str, grace_seconds: float = 0.0) -> dict:
         token = str(uuid4())
         try:
             run, previous_status = self.repository.take_over_expired_lease(
@@ -247,6 +240,7 @@ class DurableRunner:
                 owner_id=owner_id,
                 lease_token=token,
                 expires_at=self._lease_expiry(),
+                grace_seconds=grace_seconds,
             )
         except (PermissionError, ValueError) as exc:
             raise RunConflict(str(exc)) from exc
@@ -348,10 +342,16 @@ class DurableRunner:
             raise RunConflict(str(exc)) from exc
 
     def reconcile_expired_runs(self, *, owner_id: str) -> list[RecoveredRun]:
+        # An expired lease is only claimable after a grace window (one third of
+        # the lease TTL), so a worker whose heartbeat merely lagged is not
+        # immediately stripped of its run by the reconciler.
+        grace = max(0.0, self.lease_ttl.total_seconds() / 3)
         recovered: list[RecoveredRun] = []
         for run_id in self.repository.list_recovery_candidates():
             try:
-                takeover = self.take_over_expired_run(run_id, owner_id=owner_id)
+                takeover = self.take_over_expired_run(
+                    run_id, owner_id=owner_id, grace_seconds=grace,
+                )
             except RunConflict:
                 continue
             token = takeover["lease_token"]
@@ -364,5 +364,14 @@ class DurableRunner:
                 else:
                     recovered.append(RecoveredRun(run=run, lease_token=token))
             except Exception as exc:
-                self.fail_run(run_id, lease_token=token, error=f"Recovery failed: {exc}")
+                # Recovery validation failed: mark the run failed. If even the
+                # failure marker cannot be written (e.g. lease state raced),
+                # swallow the error so one bad run never aborts the whole
+                # startup reconciliation loop.
+                try:
+                    self.fail_run(
+                        run_id, lease_token=token, error=f"Recovery failed: {exc}",
+                    )
+                except Exception:
+                    pass
         return recovered
