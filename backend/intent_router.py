@@ -30,7 +30,33 @@ _RESEARCH = re.compile(
 _SOCIAL = re.compile(r"^(好的|好|谢谢|感谢|辛苦了|明白了|收到)([，, ]*(谢谢|感谢))?[。！! ]*$")
 _OUT_OF_SCOPE = re.compile(r"(天气|彩票|星座|写代码|这段代码|代码实现|程序代码|编程|翻译|菜谱|体育比分)")
 _FINANCE_SCOPE = re.compile(r"(公司|企业|行业|股票|证券|财务|盈利|估值|市场|投资)")
-_INJECTION = re.compile(r"(忽略|绕过|无视).{0,30}(指令|规则|限制|权限|调用).{0,30}(工具|搜索|系统)?")
+_INJECTION = re.compile(
+    r"("
+    # 中文：忽略/无视/忘掉/跳过 + 指令/规则/之前/上面/系统提示
+    r"(?:忽略|无视|不管|不要管|别管|跳过|忘掉|忘记|停止|禁止|不用理|不必理会|别听)"
+    r".{0,30}(?:指令|规则|限制|权限|调用|内容|消息|对话|上下文|提示|要求|预设|系统|"
+    r"之前|上面|前面|protocol|instructions|prompt|rules)|"
+    # 中文：不要/请勿 + 遵循/遵守 + 指令/规则/系统
+    r"(?:不要|别|请勿|禁止|无需|不必).{0,20}(?:遵循|遵守|听从|执行|理会)"
+    r".{0,20}(?:指令|规则|提示|系统|之前|上面|前面)|"
+    # 中文：打印/泄露/展示系统提示或密钥
+    r"(?:打印|重复|复述|泄露|展示|输出|告诉我|背诵).{0,20}"
+    r"(?:系统提示|system prompt|指令|规则|密钥|secret|api key|password)|"
+    # 中文：角色冒充/越狱
+    r"(?:你现在是|假装你是|扮演|越狱|脱轨|绕过审查|不受限)"
+    r"|"
+    # 英文：忽略/绕过之前指令
+    r"(?:ignore|disregard|bypass|skip|overlook|forget).{0,40}"
+    r"(?:previous|prior|above|earlier|system|all|any|the|these|those).{0,20}"
+    r"(?:instruction|prompt|rule|message|context|guideline|policy|restriction)|"
+    # 英文：重复/泄露提示词
+    r"(?:repeat|print|reveal|show|display|output).{0,20}"
+    r"(?:system prompt|instructions|secret|api key|password)|"
+    # 英文：角色冒充/越狱关键词
+    r"(?:you are now|pretend|jailbreak|do anything now|unrestricted)"
+    r")",
+    re.IGNORECASE,
+)
 _QUESTION = re.compile(r"(呢|吗|如何|怎么样|为什么|多少|是否|有没有|？|\?)")
 _NEGATED_RESEARCH = re.compile(r"(不用|不要|别|无需|不需要|停止|取消).{0,8}(再)?(研究|调研|分析|查|看)")
 _GRATITUDE = re.compile(r"(谢谢|感谢|辛苦)")

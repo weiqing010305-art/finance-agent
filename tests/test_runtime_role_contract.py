@@ -34,7 +34,12 @@ def test_entrypoint_uses_pgpass_not_password_environment_or_database_url():
 
 def test_runtime_images_contain_all_entrypoints_and_migrations():
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
-    for required in ("COPY scripts ./scripts", "COPY alembic ./alembic", "COPY alembic.ini ./alembic.ini"):
+    for required in (
+        "COPY --chown=appuser:appuser scripts ./scripts",
+        "COPY --chown=appuser:appuser alembic ./alembic",
+        "COPY --chown=appuser:appuser alembic.ini ./alembic.ini",
+        "USER appuser",
+    ):
         assert required in dockerfile
 
 

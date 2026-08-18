@@ -1,0 +1,35 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Virtual environments & toolchains
+.venv
+venv
+node_modules
+
+# Secrets — never send these to the Docker daemon
+secrets
+backups
+backend/.env
+.env
+*.pem
+*.key
+*.fsbk
+*.db
+*.db-*
+
+# Test & review leftovers
+__pycache__
+*.py[cod]
+.pytest_cache
+.test-tmp*
+.phase*-check*
+.phase*-review*
+.pytest-*
+pytest-*
+
+# IDE & OS
+.idea
+.vscode
+.DS_Store
