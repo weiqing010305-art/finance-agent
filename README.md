@@ -30,6 +30,38 @@ FinScope 是一个面向个人研究者的深度研究（Deep Research）Agent�
 - **生产级隔离**：PostgreSQL 行级安全（RLS）+ 邀请制认证，租户之间的研究记录与证据严格隔离。
 - **端到端可观测**：OpenTelemetry + Prometheus + Loki + Grafana，研究轨迹可追踪但不暴露模型内部思维。
 
+## 更新记录（2026-08 批次）
+
+本轮（相对上一版）的主要更新，按主题分组：
+
+### 受控工具真实化
+- 5 个占位工具全部实现为真实能力：`calculate_financial_metrics`（10 个确定性指标，公式与输入追溯）、`search_web` / `search_filings`（DeepSeek 受控联网搜索 + 官方披露域名白名单）、`read_document`（文档库分节读取）、`extract_financial_facts`（确定性规则抽取，带期间/单位/币种/来源绑定）。
+- 所有工具缺输入/缺配置时返回显式 `degraded`，不静默伪造结果。
+
+### 研究链路端到端串联
+- 执行器自动把已成功步骤的输出注入下游工具输入：搜索/检索文本 → `extract_financial_facts.texts`，抽取事实 → `calculate_financial_metrics.facts`；显式输入优先，账本仍记录计划原始输入（防篡改校验不变）。
+- Planner 新增 `get_quote` 步骤：每次研究并行获取真实行情。
+
+### 真实数据源
+- **巨潮资讯公告 API**（A 股官方披露，无需 key）：`search_filings` 主路径；港股或巨潮失败时降级网页搜索（`degraded` + `fallback_used` 显式标记）。
+- **腾讯免费行情**（A 股/港股/美股）：新增 `get_quote` 工具，GBK 字段解析为确定性数值（现价/涨跌/PE/PB/市值等）。
+- 真实调用冒烟脚本：`scripts/verify_filings_source.py`、`scripts/verify_quote.py`。
+
+### 工程与正确性修复
+- **状态机规则单一事实源**：新增 `backend/run_states.py`，SQLite / PostgreSQL 的 CAS 守卫与迁移触发器全部由它生成（修复了 `database.py` 缺失 `running→completed` 的漂移）。
+- **租约抢占宽限期**：`reconcile_expired_runs` 使用 lease TTL 1/3 宽限，心跳延迟的 worker 不会被立刻抢走；恢复失败不再拖垮启动。
+- **迁移 SQL 切分修复**：按字符串/注释感知切分，不再被字面量里的分号破坏。
+
+### 测试与评测可信度
+- **真实 PostgreSQL 集成门**：`tests/test_postgres_real_integration.py` 在真实 PG 上执行 Alembic 迁移并验证 RLS 租户隔离（默认 skip，需 `FINSCOPE_TEST_PG_URL`；本机已用一次性容器实测通过）。
+- **测试全离线化**：conftest 桩掉腾讯行情与巨潮 API，测试套件完全离线确定性。
+- **评测去自证化**：Phase 4 证据核验评测改为混合质量输入（支持/伪造/无证据/冲突并存），质量属性恒真断言 + 诚实指标允许小于 1.0。
+
+### 架构演进与安全
+- **增量式巨类拆分**：新增 `DocumentRepository`（文档领域数据访问），老 `Repository` 冻结并开始瘦身。
+- **意图路由注入防线补强**：覆盖中英文常见注入家族（忽略指令/泄露提示词/角色冒充/越狱），全部 fail-closed。
+- **Docker 镜像卫生**：新增 `.dockerignore`（secrets/backups/.venv 不再进构建上下文），运行时非 root `appuser` 运行（实测镜像 484MB、import 正常）。
+
 ## 架构总览
 
 FinScope 采用**模块化单体**（modular monolith）架构：一份代码、一组模块，通过 PostgreSQL 事务边界和 RLS 实现多租户隔离。模型服务只承担推理，联网搜索、来源筛选、证据关系都由产品代码控制。
