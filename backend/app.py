@@ -397,6 +397,25 @@ def create_app(
             response["configured"] = "true" if deepseek_key else "false"
         return response
 
+    @app.get("/api/securities")
+    async def list_securities() -> dict[str, list[dict[str, str]]]:
+        """Lightweight alias catalogue for the front-end composer: lets the
+        left-rail company label update as the user types without re-running
+        the intake graph on every keystroke."""
+        from backend.entity_resolver import EntityResolver
+        resolver = EntityResolver()
+        seen: set[tuple[str, str]] = set()
+        rows: list[dict[str, str]] = []
+        for entry in resolver._rows:
+            key = (entry["company"], entry["symbol"])
+            if key in seen:
+                continue
+            seen.add(key)
+            for alias in entry.get("aliases", []):
+                rows.append({"alias": alias, "company": entry["company"],
+                             "symbol": entry["symbol"], "market": entry["market"]})
+        return {"securities": rows}
+
     @app.post("/api/conversations/route", response_model=ConversationRouteResponse)
     async def route_conversation(payload: ConversationRouteRequest) -> dict:
         request_id = payload.request_id or str(uuid4())
