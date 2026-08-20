@@ -95,6 +95,62 @@ def build_formal_research_router(
                     "proposed_external_plan": planned.model_dump(mode="json"),
                     "warning": "proposed external plan is not executed by the synthetic smoke profile",
                 }
+            elif execution_profile == "controlled_tools":
+                if payload.budget_limit < 10:
+                    raise PlannerError("controlled-tools plan requires budget_limit >= 10")
+                plan = {
+                    "version": 1, "goal": payload.question,
+                    "entity": entity.model_dump(mode="json"),
+                    "steps": [
+                        {
+                            "id": "search_filings", "kind": "tool",
+                            "tool_name": "search_filings", "dependencies": [],
+                            "input": {"company": payload.company, "symbol": payload.symbol,
+                                      "market": payload.market, "document_types": ["annual_report"]},
+                            "success_criteria": ["find at least one official filing"],
+                            "max_attempts": 1, "estimated_cost": 2,
+                        },
+                        {
+                            "id": "get_quote", "kind": "tool",
+                            "tool_name": "get_quote", "dependencies": [],
+                            "input": {"symbol": payload.symbol, "market": payload.market},
+                            "success_criteria": ["fetch one deterministic quote"],
+                            "max_attempts": 1, "estimated_cost": 1,
+                        },
+                        {
+                            "id": "retrieve_documents", "kind": "tool",
+                            "tool_name": "retrieve_documents", "dependencies": [],
+                            "input": {"company": payload.company, "question": payload.question, "top_k": 5},
+                            "success_criteria": ["retrieve traceable document chunks"],
+                            "max_attempts": 1, "estimated_cost": 2,
+                        },
+                        {
+                            "id": "extract_facts", "kind": "tool",
+                            "tool_name": "extract_financial_facts", "dependencies": ["search_filings", "retrieve_documents"],
+                            "input": {"periods": 3},
+                            "success_criteria": ["extract facts with period unit currency and source"],
+                            "max_attempts": 1, "estimated_cost": 3,
+                        },
+                        {
+                            "id": "calculate_metrics", "kind": "tool",
+                            "tool_name": "calculate_financial_metrics",
+                            "dependencies": ["extract_facts"],
+                            "input": {"metrics": ["growth", "margin", "roe"]},
+                            "success_criteria": ["calculate deterministic metrics from extracted facts"],
+                            "max_attempts": 1, "estimated_cost": 1,
+                        },
+                        {
+                            "id": "synthesize_verified_report", "kind": "synthesis",
+                            "tool_name": "citation_constrained_report",
+                            "dependencies": ["calculate_metrics", "get_quote"],
+                            "input": {},
+                            "success_criteria": ["all claims are extractive and cited"],
+                            "max_attempts": 1, "estimated_cost": 0,
+                        },
+                    ],
+                    "execution_profile": execution_profile,
+                    "limitations": ["non-official public APIs (cninfo / tencent); falls back on failure"],
+                }
             else:
                 if payload.budget_limit < 2:
                     raise PlannerError("real RAG local plan requires budget_limit >= 2")
@@ -151,8 +207,9 @@ def build_formal_research_router(
         plan = durable.get_latest_plan(principal, run_id)
         if plan is None:
             raise HTTPException(status_code=409, detail="research run has no plan")
+        payload = {**run, "run_id": run.get("id", run_id)}
         return {
-            **run, "execution_profile": _profile(plan),
+            **payload, "execution_profile": _profile(plan),
             "report": artifacts.get_report(principal, run_id),
         }
 
@@ -173,12 +230,13 @@ def build_formal_research_router(
         if run is None:
             raise HTTPException(status_code=404, detail="research run not found")
         if run["status"] == "pause_requested":
-            return run
+            return {**run, "run_id": run.get("id", run_id)}
         try:
-            return durable.transition(
+            updated = durable.transition(
                 principal, run_id, from_status="running", to_status="pause_requested",
                 expected_version=int(run["state_version"]),
             )
+            return {**updated, "run_id": updated.get("id", run_id)}
         except DurableConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

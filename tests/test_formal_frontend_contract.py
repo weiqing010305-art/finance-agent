@@ -17,14 +17,25 @@ def test_formal_console_is_default_and_csp_compatible():
 
 def test_formal_console_calls_authenticated_phase6_contracts():
     for endpoint in (
-        '"/auth/login"', '"/api/auth/refresh"', '"/auth/me"', '"/research"',
-        "`/research/${state.runId}/pause`", "`/research/${state.runId}/resume`",
+        '"/auth/login"', '"/api/auth/refresh"', '"/auth/me"', '"/health"',
+        '"/research"', "`/research/${state.runId}/pause`",
+        "`/research/${state.runId}/resume`",
     ):
         assert endpoint in JS
     assert 'headers:{"Idempotency-Key":crypto.randomUUID()}' in JS
     assert "sessionStorage" in JS and "localStorage" not in JS
     assert "finscope.access" not in JS and "finscope.refresh" not in JS
     assert 'credentials:"same-origin"' in JS
+
+    # Frontend reads these run fields, so GET /api/research/{run_id} must expose them.
+    for field in (
+        "run.company", "run.question", "run.progress", "run.state_version",
+        "run.budget_used", "run.status", "run.report.markdown",
+        "run.report.content_hash",
+    ):
+        assert field in JS, f"frontend reads {field}; backend contract must expose it"
+    # POST /api/research must return run_id so the frontend can persist state.runId.
+    assert "state.runId=run.run_id" in JS
 
 
 def test_formal_console_shows_all_six_states_and_smoke_limitation():
