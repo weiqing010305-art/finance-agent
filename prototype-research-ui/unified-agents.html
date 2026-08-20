@@ -362,7 +362,7 @@
   </div>
 
   <script>
-    const API_BASE = 'https://localhost:8443/api';
+    const API_BASE = 'http://127.0.0.1:8780/api';
     const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
     
     const ui = {
@@ -402,7 +402,12 @@
       confirmOk: document.getElementById('confirm-ok'),
     };
     
-    const runtime = { taskId: null, taskStatus: null, stream: null, eventIds: new Set(), enrichedEvidenceTasks: new Set(), evidence: [], draftText: '', startedAt: null, finishedAt: null, traceTimer: null, traceTone: 'running', provider: 'deepseek', company: '', symbol: '', market: 'HK', question: '', depth: 'standard', pendingCaseId: null };
+    const runtime = { taskId: null, taskStatus: null, stream: null, eventIds: new Set(), enrichedEvidenceTasks: new Set(), evidence: [], draftText: '', startedAt: null, finishedAt: null, traceTimer: null, traceTone: 'running', provider: 'deepseek', company: '', symbol: '', market: 'HK', question: '', depth: 'standard', pendingCaseId: null, securities: [], pendingCompany: null };
+    const tickerFromSymbol = (symbol) => {
+      if (!symbol) return '';
+      const parts = String(symbol).split('.');
+      return parts[0];
+    };
     
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>'"]/g, character => ({
@@ -555,6 +560,54 @@
       setTraceState('等待任务', 'completed');
       renderEvidence([]);
       setStatus(message, 'completed');
+    }
+
+    async function loadSecurities() {
+      try {
+        const data = await api('/securities');
+        runtime.securities = Array.isArray(data && data.securities) ? data.securities : [];
+      } catch (_) {
+        runtime.securities = [];
+      }
+    }
+
+    // Match the longest alias found in `text` against the alias catalogue.
+    function matchCompanyInText(text) {
+      if (!text || !runtime.securities.length) return null;
+      const cleaned = String(text);
+      let best = null;
+      for (const entry of runtime.securities) {
+        const alias = String(entry.alias || '');
+        if (!alias) continue;
+        if (cleaned.indexOf(alias) === -1) continue;
+        if (!best || alias.length > best.alias.length) {
+          best = { ...entry, alias };
+        }
+      }
+      return best;
+    }
+
+    // Update the left-rail company label as the user types.
+    function syncComposerCompany() {
+      if (!ui.input) return;
+      const text = ui.input.value || '';
+      const match = matchCompanyInText(text);
+      if (match) {
+        runtime.pendingCompany = match;
+        ui.companyName.textContent = match.company;
+        ui.companyTicker.textContent = [tickerFromSymbol(match.symbol), match.market].filter(Boolean).join(' · ');
+      } else if (runtime.pendingCompany) {
+        runtime.pendingCompany = null;
+        if (!runtime.taskId) {
+          ui.companyName.textContent = '尚未选择公司';
+          ui.companyTicker.textContent = 'Agent 将自动识别研究对象';
+        }
+      }
+    }
+
+    function bindComposerHints() {
+      if (!ui.input) return;
+      ui.input.addEventListener('input', syncComposerCompany);
     }
 
     async function api(path, options = {}) {
@@ -1007,12 +1060,69 @@
     }
     
     function openStream(taskId) {
-      // formal_app does not expose an SSE /events stream; fall back to polling
-      // GET /api/research/{id} (status + progress) and enrich with the
-      // persisted evidence bundle when the run reaches a terminal state.
-      let stopped = false;
+      // backend/app.py exposes GET /api/research/{id}/events as an SSE stream
+      // that emits every persisted run event: tool trace rows, report.delta
+      // chunks, state transitions, and the terminal completion event.
       closeStream();
-      runtime.stream = { close: () => { stopped = true; } };
+      if (typeof EventSource === 'undefined') {
+        // Old browser fallback — degrade to polling so the UI still updates.
+        pollRunStatus(taskId);
+        return;
+      }
+      const url = `${API_BASE}/research/${encodeURIComponent(taskId)}/events`;
+      const source = new EventSource(url, { withCredentials: false });
+      let lastEventId = 0;
+      const onProgress = (ev) => {
+        let payload = {};
+        try { payload = JSON.parse(ev.data); } catch (_) { payload = {}; }
+        const event = Object.assign({ id: Number(ev.lastEventId || payload.id || 0) }, payload);
+        if (event.id && event.id <= lastEventId) return;
+        if (event.id) lastEventId = event.id;
+        // 1) Trace row for every event with a message.
+        if (event.message) appendLog(event);
+        // 2) Streaming report delta.
+        if (event.kind === 'report.delta' && event.payload && typeof event.payload.delta === 'string') {
+          appendReportDelta(event.payload.delta);
+        }
+        // 3) State transition + progress: reflect into the status / chip / buttons.
+        if (event.status || typeof event.progress === 'number') {
+          applyTask({
+            id: taskId,
+            status: event.status || runtime.taskStatus,
+            progress: typeof event.progress === 'number' ? event.progress : runtime.taskStatus ? null : 0,
+            company: runtime.company,
+            symbol: runtime.symbol,
+            market: runtime.market,
+            question: runtime.question,
+            depth: runtime.depth,
+            created_at: runtime.startedAt ? new Date(runtime.startedAt).toISOString() : undefined,
+            updated_at: event.created_at,
+            evidence: runtime.evidence,
+          });
+        }
+        // 4) Terminal — close the stream and fetch the final report.
+        const status = String(event.status || '').toLowerCase();
+        if (TERMINAL.has(status)) {
+          source.close();
+          runtime.stream = null;
+          finalizeStream(taskId, status);
+        }
+      };
+      source.addEventListener('progress', onProgress);
+      source.addEventListener('error', () => {
+        // EventSource auto-reconnects on transient errors; only fall back to
+        // polling when the server has clearly given up (readyState === CLOSED).
+        if (source.readyState === EventSource.CLOSED) {
+          source.close();
+          runtime.stream = null;
+          pollRunStatus(taskId);
+        }
+      });
+      runtime.stream = source;
+    }
+
+    async function pollRunStatus(taskId) {
+      let stopped = false;
       const tick = async () => {
         if (stopped) return;
         try {
@@ -1020,13 +1130,7 @@
           applyTask(task);
           const status = (task.status || '').toLowerCase();
           if (TERMINAL.has(status)) {
-            if (status === 'completed') {
-              try {
-                const evidence = await api(`/research/${taskId}/evidence`);
-                if (Array.isArray(evidence)) runtime.evidence = evidence;
-                renderEvidence(runtime.evidence);
-              } catch (_) { /* evidence endpoint optional */ }
-            }
+            await finalizeStream(taskId, status);
             return;
           }
         } catch (error) {
@@ -1035,7 +1139,28 @@
         }
         setTimeout(tick, 1500);
       };
+      runtime.stream = { close: () => { stopped = true; } };
       setTimeout(tick, 300);
+    }
+
+    async function finalizeStream(taskId, status) {
+      try {
+        const task = await api(`/research/${taskId}`);
+        applyTask(task);
+        if (status === 'completed') {
+          try {
+            const evidence = await api(`/research/${taskId}/evidence`);
+            if (Array.isArray(evidence)) runtime.evidence = evidence;
+            renderEvidence(runtime.evidence);
+          } catch (_) { /* evidence endpoint optional */ }
+          renderReport(task);
+          setStatus('研究完成', 'completed');
+        } else if (status === 'failed') {
+          setStatus(task.error || '研究失败', 'failed');
+        }
+      } catch (error) {
+        setStatus(`收尾失败：${error.message}`, 'failed');
+      }
     }
     
     async function startResearch(input) {
@@ -1080,6 +1205,11 @@
       }
     }
     
+    function bootstrap() {
+      loadSecurities();
+      bindComposerHints();
+      return restoreOrStart();
+    }
     async function restoreOrStart() {
       try {
         const health = await api('/health');
@@ -1155,10 +1285,11 @@
       ui.send.disabled = true;
       try {
         if (!runtime.taskId) {
+          const match = runtime.pendingCompany || matchCompanyInText(message);
           const started = await startResearch({
-            company: '自动识别中',
-            symbol: '',
-            market: 'AUTO',
+            company: match ? match.company : '自动识别中',
+            symbol: match ? (tickerFromSymbol(match.symbol) || match.symbol) : '',
+            market: match ? match.market : 'AUTO',
             depth: 'standard',
             question: message,
           });
@@ -1356,7 +1487,7 @@
       }, true);
     })();
 
-    restoreOrStart();
+    bootstrap();
     
   </script>
 </body>
