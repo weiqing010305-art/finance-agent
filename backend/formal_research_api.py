@@ -14,7 +14,7 @@ from backend.planner import DeterministicPlanner, PlannerError
 from backend.schemas import SecurityCandidate
 
 
-SUPPORTED_EXECUTION_PROFILES = {"synthetic_smoke", "real_rag_local"}
+SUPPORTED_EXECUTION_PROFILES = {"synthetic_smoke", "real_rag_local", "controlled_tools"}
 
 
 def _job_kind(profile: str) -> str:
@@ -31,6 +31,8 @@ def _profile(plan: dict) -> str:
 def _profile_available(persisted: str, configured: str) -> bool:
     return persisted == configured or (
         configured == "real_rag_local" and persisted == "synthetic_smoke"
+    ) or (
+        configured == "controlled_tools" and persisted == "synthetic_smoke"
     )
 
 

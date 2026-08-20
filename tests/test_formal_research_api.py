@@ -94,6 +94,28 @@ def test_real_rag_profile_persists_minimal_matching_plan_and_job_kind():
     assert viewed["execution_profile"] == "real_rag_local"
 
 
+def test_controlled_tools_profile_persists_full_plan_and_job_kind():
+    client, sent = _app(execution_profile="controlled_tools")
+    response = client.post("/api/research", json={
+        "company": "腾讯控股", "symbol": "0700", "market": "HK",
+        "question": "分析腾讯现金流质量", "depth": "standard", "budget_limit": 20,
+    }, headers={"Idempotency-Key": "formal-ct-0001"})
+    assert response.status_code == 202
+    body = response.json()
+    assert body["execution_profile"] == "controlled_tools"
+    assert sent == [body["run_id"]]
+    plan = client.app.state.durable.get_latest_plan(
+        client.app.state.principal, body["run_id"]
+    )
+    assert plan["execution_profile"] == "controlled_tools"
+    assert [step["id"] for step in plan["steps"]] == [
+        "search_filings", "get_quote", "retrieve_documents",
+        "extract_facts", "calculate_metrics", "synthesize_verified_report",
+    ]
+    viewed = client.get(f"/api/research/{body['run_id']}").json()
+    assert viewed["execution_profile"] == "controlled_tools"
+
+
 def test_owner_can_retry_a_failed_run_as_a_new_idempotent_run():
     client, sent = _app()
     created = client.post("/api/research", json={

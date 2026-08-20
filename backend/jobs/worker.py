@@ -29,14 +29,18 @@ def _configure_formal_worker() -> None:
     if os.getenv("DATABASE_ROLE") != "finscope_worker":
         return
     profile = os.getenv("FINSCOPE_FORMAL_EXECUTOR", "").strip()
-    if profile not in {"synthetic_smoke", "real_rag_local"}:
+    if profile not in {"synthetic_smoke", "real_rag_local", "controlled_tools"}:
         raise RuntimeError("formal worker requires an explicitly supported executor profile")
 
     from sqlalchemy import create_engine
 
     from backend.db.artifacts import PostgresResearchArtifacts
     from backend.db.durable import PostgresDurableRepository
-    from backend.formal_processor import FormalRealRagProcessor, SyntheticSmokeResearchProcessor
+    from backend.formal_processor import (
+        ControlledToolsResearchProcessor,
+        FormalRealRagProcessor,
+        SyntheticSmokeResearchProcessor,
+    )
     from backend.jobs.executor import PersistedJobExecutor, WorkerJobContextResolver
     from backend.jobs.ledger import JobLedger
     from backend.jobs.worker_runtime import configure_executor
@@ -48,6 +52,8 @@ def _configure_formal_worker() -> None:
     artifacts = PostgresResearchArtifacts(engine)
     synthetic_processor = SyntheticSmokeResearchProcessor(durable, artifacts)
     handlers = {"synthetic_smoke_research": synthetic_processor}
+    if profile == "controlled_tools":
+        handlers["controlled_tools_research"] = ControlledToolsResearchProcessor(durable, artifacts)
     if profile == "real_rag_local":
         from backend.authorized_retrieval import AuthorizedChunkCatalog, AuthorizedMilvusRetriever
         from backend.embeddings import BgeLargeZhEmbeddingProvider

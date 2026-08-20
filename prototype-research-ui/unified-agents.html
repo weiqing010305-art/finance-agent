@@ -362,8 +362,8 @@
   </div>
 
   <script>
-    const API_BASE = 'http://127.0.0.1:8780/api';
-    const TERMINAL = new Set(['completed', 'failed']);
+    const API_BASE = 'https://localhost:8443/api';
+    const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
     
     const ui = {
       scrollArea: document.getElementById('document-scroll'),
@@ -558,10 +558,16 @@
     }
 
     async function api(path, options = {}) {
-      const response = await fetch(`${API_BASE}${path}`, {
-        ...options,
-        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-      });
+      const method = (options.method || 'GET').toUpperCase();
+      const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      // formal_app requires Idempotency-Key on mutating endpoints.
+      if ((method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE')
+          && !headers['Idempotency-Key']) {
+        headers['Idempotency-Key'] = (crypto.randomUUID
+          ? crypto.randomUUID()
+          : `idemp-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      }
+      const response = await fetch(`${API_BASE}${path}`, { ...options, method, headers });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body.detail || `请求失败 (${response.status})`);
@@ -700,18 +706,25 @@
     }
     
     function renderReport(task) {
-      if (!task.result) return;
+      const report = task.report || task.result;
+      if (!report) return;
       resetStreamingDraft();
-      const evidenceMap = new Map(task.evidence.map(item => [item.citation_number, item]));
+      const evidenceItems = (task.evidence && task.evidence.length) ? task.evidence
+        : (runtime.evidence && runtime.evidence.length) ? runtime.evidence : [];
+      const evidenceMap = new Map(evidenceItems.map(item => [item.citation_number, item]));
       ui.reportKicker.textContent = `${task.company}财报案卷`;
-      ui.reportProvider.textContent = task.result.synthetic ? '合成演示数据' : providerLabel(task.result.provider);
-      ui.reportTitle.textContent = task.result.title;
-      ui.reportDescription.textContent = task.result.synthetic ? '当前内容为合成演示数据，不代表真实研究结论。' : '公开财报、网页与外部事件共享同一套证据编号，点击数字可访问原始来源。';
-      const summaryCitations = task.evidence.slice(0, 2).map(item => citationMarkup(item.citation_number, evidenceMap)).join('');
-      ui.reportSummary.innerHTML = `<strong>核心结论：</strong>${escapeHtml(task.result.summary)} ${summaryCitations}`;
-      ui.reportBody.innerHTML = task.result.sections.map(section => {
-        const citations = section.citations.map(number => citationMarkup(number, evidenceMap)).join('');
-        return `<section class="section"><h3>${escapeHtml(section.title)}</h3><div class="section-actions"><button data-prompt="追问：${escapeHtml(section.title)}">追问</button><button data-prompt="重新研究：${escapeHtml(section.title)}">重新研究本节</button></div><div class="section-content">${formatResearchContent(section.content, section.points)}${citations ? `<div class="section-citations">${citations}</div>` : ''}</div></section>`;
+      ui.reportProvider.textContent = report.synthetic ? '合成演示数据' : providerLabel(report.provider);
+      ui.reportTitle.textContent = report.title || `${task.company}财报研究`;
+      ui.reportDescription.textContent = report.synthetic
+        ? '当前内容为合成演示数据，不代表真实研究结论。'
+        : '公开财报、网页与外部事件共享同一套证据编号，点击数字可访问原始来源。';
+      const summaryCitations = evidenceItems.slice(0, 2).map(item => citationMarkup(item.citation_number, evidenceMap)).join('');
+      const summary = report.summary || '本次研究在受控工具链中执行；巨潮/腾讯/检索任一环节失败时已显式降级。';
+      ui.reportSummary.innerHTML = `<strong>核心结论：</strong>${escapeHtml(summary)} ${summaryCitations}`;
+      const sections = Array.isArray(report.sections) ? report.sections : [];
+      ui.reportBody.innerHTML = sections.map(section => {
+        const sectionCites = (section.citations || []).map(number => citationMarkup(number, evidenceMap)).join('');
+        return `<section class="section"><h3>${escapeHtml(section.title || '')}</h3><div class="section-actions"><button data-prompt="追问：${escapeHtml(section.title || '')}">追问</button><button data-prompt="重新研究：${escapeHtml(section.title || '')}">重新研究本节</button></div><div class="section-content">${formatResearchContent(section.content, section.points || [])}${sectionCites ? `<div class="section-citations">${sectionCites}</div>` : ''}</div></section>`;
       }).join('');
       bindPromptButtons(ui.reportBody);
     }
@@ -994,33 +1007,35 @@
     }
     
     function openStream(taskId) {
+      // formal_app does not expose an SSE /events stream; fall back to polling
+      // GET /api/research/{id} (status + progress) and enrich with the
+      // persisted evidence bundle when the run reaches a terminal state.
+      let stopped = false;
       closeStream();
-      const stream = new EventSource(`${API_BASE}/research/${taskId}/events`);
-      runtime.stream = stream;
-      stream.addEventListener('progress', async message => {
-        const event = JSON.parse(message.data);
-        runtime.taskStatus = event.status;
-        if (event.kind === 'report.delta') appendReportDelta(event.payload?.delta || '');
-        else appendLog(event);
-        setTraceState(event.status === 'running' ? `执行中 ${event.progress}%` : event.message, event.status);
-        ui.meta.textContent = `财报分析 Agent · 标准深度 · ${event.progress}%`;
-        setComposerAction(event.status);
-        if (event.step === 'reading' && event.status === 'running') {
-          const quickTask = await api(`/research/${taskId}`);
-          applyTask(quickTask);
-        }
-        if (TERMINAL.has(event.status)) {
-          closeStream();
-          setStatus(event.status === 'completed' ? '正在整理报告与证据' : event.message, event.status === 'completed' ? 'running' : event.status);
+      runtime.stream = { close: () => { stopped = true; } };
+      const tick = async () => {
+        if (stopped) return;
+        try {
           const task = await api(`/research/${taskId}`);
           applyTask(task);
-        } else {
-          setStatus(event.message, event.status);
+          const status = (task.status || '').toLowerCase();
+          if (TERMINAL.has(status)) {
+            if (status === 'completed') {
+              try {
+                const evidence = await api(`/research/${taskId}/evidence`);
+                if (Array.isArray(evidence)) runtime.evidence = evidence;
+                renderEvidence(runtime.evidence);
+              } catch (_) { /* evidence endpoint optional */ }
+            }
+            return;
+          }
+        } catch (error) {
+          setStatus(`轮询中断：${error.message}`, 'failed');
+          return;
         }
-      });
-      stream.onerror = () => {
-        if (runtime.stream === stream) setStatus('进度连接中断，正在等待恢复', 'offline');
+        setTimeout(tick, 1500);
       };
+      setTimeout(tick, 300);
     }
     
     async function startResearch(input) {
@@ -1042,8 +1057,10 @@
         const task = await api('/research', {
           method: 'POST',
           body: JSON.stringify({
-            company: input.company, symbol: input.symbol || null, market: input.market, agent: 'financial', depth: input.depth,
+            company: input.company, symbol: input.symbol || '000000', market: input.market,
+            depth: input.depth,
             question: input.question,
+            budget_limit: 50,
           }),
         });
         applyTask(task);
@@ -1072,7 +1089,7 @@
         if (saved) {
           try {
             const task = await api(`/research/${saved}`);
-            if (health.mode !== 'mock' && task.result?.synthetic) {
+            if (health.mode !== 'mock' && (task.report?.synthetic || task.result?.synthetic)) {
               showReadyState('已忽略旧的合成演示案卷 · 可以开始真实研究');
               await loadCases();
               return;
