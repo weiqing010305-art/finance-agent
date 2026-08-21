@@ -631,11 +631,21 @@
     function appendLog(event) {
       if (event.id && runtime.eventIds.has(event.id)) return;
       if (event.id) runtime.eventIds.add(event.id);
+      const message = String(event.message || '').trim();
+      if (!message) return;
+      // Skip consecutive duplicate trace rows so repeated provider-progress
+      // messages (e.g. hundreds of "正在生成研究报告" deltas) don't flood
+      // the trace timeline. Different message bodies still render normally.
+      const lastRow = ui.traceList.querySelector('.trace-row:last-of-type');
+      if (lastRow) {
+        const lastText = lastRow.querySelector('p')?.textContent || '';
+        if (lastText === message) return;
+      }
       ui.traceList.querySelector('.trace-empty')?.remove();
       const time = new Date(event.created_at || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
       const traceRow = document.createElement('div');
       traceRow.className = 'trace-row';
-      traceRow.innerHTML = `<span class="trace-marker"></span><div class="trace-copy"><time>${escapeHtml(time)}</time><p>${escapeHtml(event.message)}</p></div>`;
+      traceRow.innerHTML = `<span class="trace-marker"></span><div class="trace-copy"><time>${escapeHtml(time)}</time><p>${escapeHtml(message)}</p></div>`;
       ui.traceList.append(traceRow);
       requestAnimationFrame(() => {
         const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
