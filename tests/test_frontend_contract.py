@@ -23,7 +23,8 @@ def test_new_case_flow_only_asks_for_research_question() -> None:
 
     assert 'id="case-dialog"' not in source
     assert 'id="case-company"' not in source
-    assert "company: '自动识别中'" in source
+    # 提交时用实时匹配的公司名，未匹配时才 fallback 到“自动识别中”
+    assert "company: match ? match.company : '自动识别中'" in source
     assert "Agent 会自动识别公司、股票代码和市场" in source
 
 
@@ -140,9 +141,11 @@ def test_frontend_renders_quick_result_before_task_completion() -> None:
         "async function startResearch", 1
     )[0]
 
-    assert "event.step === 'reading'" in stream_body
+    # EventSource 流式处理 SSE 事件：有 message 就追加 trace 行
+    assert "if (event.message) appendLog(event);" in stream_body
+    # 终态后仍会拉取最终任务
     assert "await api(`/research/${taskId}`)" in stream_body
-    assert "applyTask(quickTask)" in stream_body
+    assert "applyTask(task)" in stream_body
 
 
 def test_frontend_streams_report_draft_without_polluting_trace() -> None:
@@ -155,8 +158,8 @@ def test_frontend_streams_report_draft_without_polluting_trace() -> None:
     assert "function appendReportDelta(delta)" in source
     assert "function markdownDraftMarkup(text)" in source
     assert "event.kind === 'report.delta'" in stream_body
-    assert "appendReportDelta(event.payload?.delta || '')" in stream_body
-    assert "else appendLog(event)" in stream_body
+    assert "appendReportDelta(event.payload.delta)" in stream_body
+    assert "if (event.message) appendLog(event);" in stream_body
     assert "resetStreamingDraft()" in source
 
 

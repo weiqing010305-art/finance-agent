@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend import filings_source, quote_source
+from backend import filings_source, quote_source, web_search
 
 
 class OfflineQuoteSource:
@@ -46,3 +46,17 @@ def offline_quote_source(monkeypatch):
 @pytest.fixture(autouse=True)
 def offline_filings_source(monkeypatch):
     monkeypatch.setattr(filings_source, "CninfoFilingsSource", OfflineFilingsSource)
+
+
+@pytest.fixture(autouse=True)
+def offline_deepseek_web_search(monkeypatch):
+    """Disable the real DeepSeek web-search fallback in all tests.
+
+    ``search_filings`` falls back to DeepSeek's hosted web_search for
+    non-A-share / cninfo-failure paths. The project .env can contain a real
+    DEEPSEEK_API_KEY; without this stub a research-chain test would issue a
+    real network call and hang the test runner. Tools that construct
+    ``DeepSeekWebSearch`` explicitly with a transport (unit tests) are
+    unaffected.
+    """
+    monkeypatch.setattr(web_search.DeepSeekWebSearch, "from_env", classmethod(lambda cls, env=None: None))
