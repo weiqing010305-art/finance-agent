@@ -84,6 +84,24 @@ FinScope 是一个面向个人研究者的深度研究（Deep Research）Agent�
 - **`run_id` 字段别名**：后端 `get_research` / `pause_research` 在数据库主键 `id` 之外暴露 `run_id` 别名，前端契约统一。
 - **`controlled_tools` profile 接线**：`SUPPORTED_EXECUTION_PROFILES` 加入该 profile；worker profile 白名单同步；handler 注册 `controlled_tools_research`。从此 controlled_tools 真正可启用（之前只有半成品代码）。
 
+### controlled_tools 真全栈跑通（PostgreSQL/RLS + Dramatiq）
+- **首次在 Docker Compose 全栈上端到端跑通 controlled_tools**：`fetch_financial_statements` → `get_quote` → `retrieve_documents` → `extract_financial_facts` → `calculate_financial_metrics` → 报告。
+- 实测贵州茅台研究：`status=completed / progress=100`，报告含 **138 条 financial_metrics**（36 个东方财富 F10 指标 × 4 个报告期）。
+- 新增 **Alembic migration 0014** `execution_authorizations_pg`（受控工具策略审计表），并授予 `finscope_app` / `finscope_worker` 权限。
+- PG durable 补齐 `get_runtime_snapshot` / `record_execution_authorization` / `commit_step(kind=)`，policy 透传 principal 以兼容 RLS。
+- deterministic 报告改为每个已验证结论一个 section，避免多数字结论在单一 section 中触发引用校验失败。
+- 修复 Docker 初始化脚本 CRLF 行尾（`init-roles.sh` 等），容器可直接执行。
+
+### DeepSeek LLM 综合报告（citation-constrained）
+- 新增 `backend/synthesizer.py`：`DeepSeekReportSynthesizer` 用 DeepSeek Responses API 把已验证证据合成为结构化报告。
+- **模型只能引用已持久化的证据 URL**：prompt 约束 + `_sanitize` 强制剔除非法 URL；无 `DEEPSEEK_API_KEY` 或调用失败时自动降级到确定性 `CitationConstrainedReporter`。
+- worker 接线：`ControlledToolsResearchProcessor(synthesizer=DeepSeekReportSynthesizer.from_env())`。
+- 6 个单测覆盖证据净化 / 缺 key / 非法 JSON / from_env。
+
+### 前端财务指标表格
+- `renderReport` 检测报告的 `financial_metrics` 字段后，在报告正文顶部渲染「财务指标摘要」表格（指标 / 数值 / 报告期）。
+- 受控工具报告的真实 A 股数据直接在案卷控制台可见，而不只藏在证据抽屉里。
+
 ## 架构总览
 
 FinScope 采用**模块化单体**（modular monolith）架构：一份代码、一组模块，通过 PostgreSQL 事务边界和 RLS 实现多租户隔离。模型服务只承担推理，联网搜索、来源筛选、证据关系都由产品代码控制。
@@ -232,18 +250,18 @@ finance agent/
 │   ├── evidence.py          # 证据构建
 │   ├── verifier.py          # 结论核验
 │   └── ...                  # planner、retrieval、memory、redaction 等
-├── alembic/                 # 数据库迁移（13 个版本，0001–0013）
+├── alembic/                 # 数据库迁移（14 个版本，0001–0014）
 ├── docs/                    # 设计 / 计划 / 验证 / ADR 决策文档
 ├── evals/                   # 评测用例与打分器
 ├── infra/                   # Caddy / Grafana / Loki / OTel / Prometheus / PG 配置
 ├── prototype-research-ui/   # 前端原型（案卷控制台）
 ├── scripts/                 # 运维与验证脚本（local.ps1、backup、verify_*）
-└── tests/                   # 76 个测试文件（含 integration）
+└── tests/                   # 78 个测试文件（含 integration）
 ```
 
 ## 测试与验证
 
-- 全量 pytest：**531 通过、5 跳过**（跳过项为需要真实 Milvus/BGE 环境的外部集成门；6 个失败均为本次改动之前已存在的旧前端契约 / 旧 intake throughput 测试，与新增代码无关）。
+- 全量 pytest：**543 通过、5 跳过**（跳过项为需要真实 Milvus/BGE 环境的外部集成门；无失败）。
 - 测试覆盖：持久化 Runner 契约、RLS 租户隔离、证据/引用链完整性、迁移契约、幂等重放、跨租户隔离、备份恢复等。
 - 离线评测：Phase 3/4/5 的意图路由、RAG、记忆评测用例均可离线运行。Phase 4 的证据核验评测已去自证化：在混合质量输入（支持/伪造数字/无证据/冲突并存）上断言「质量属性恒真」（伪造全捕获、无误报、冲突必披露），同时 `supported_rate` 等诚实指标反映真实输入分布、允许小于 1.0——任何把「恒等于 1.0」当成绩的回归都会被抓住。
 
