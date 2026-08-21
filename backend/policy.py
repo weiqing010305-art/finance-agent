@@ -25,6 +25,7 @@ class PolicyGate:
         user_confirmed_high_risk: bool = False,
         lease_token: str | None = None,
         reserve: bool = True,
+        principal=None,
     ) -> AuthorizationDecision:
         reasons: list[str] = []
         spec = self.registry.get(step.tool_name)
@@ -67,6 +68,6 @@ class PolicyGate:
                 reason_codes=decision.reason_codes, estimated_cost=effective_cost,
                 budget_before=remaining,
                 capability_token=capability_token, effective_cost=effective_cost,
-                budget_limit=budget_limit,
+                budget_limit=budget_limit, principal=principal,
             )
         return decision

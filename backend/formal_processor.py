@@ -237,11 +237,13 @@ class ControlledToolsResearchProcessor:
     def __init__(
         self, durable: PostgresDurableRepository, artifacts: PostgresResearchArtifacts,
         *, lease_ttl_seconds: int = 30, max_rounds: int = 8,
+        synthesizer: Any | None = None,
     ) -> None:
         self.durable = durable
         self.artifacts = artifacts
         self.lease_ttl_seconds = lease_ttl_seconds
         self.max_rounds = max_rounds
+        self.synthesizer = synthesizer
 
     # ------------------------------------------------------------------ helpers
 
@@ -249,19 +251,27 @@ class ControlledToolsResearchProcessor:
         steps = plan.get("steps", [])
         return [
             step for step in steps
-            if step["id"] not in completed_ids
+            if step.get("kind") != "synthesis"
+            and step["id"] not in completed_ids
             and set(step.get("dependencies") or []).issubset(completed_ids)
         ]
 
     def _completed_step_ids(self, run_id: str) -> set[str]:
-        return {
-            row["id"].removeprefix(f"{run_id}:")
-            for row in self.durable.get_runtime_snapshot(run_id)["steps"]
-            if row["status"] == "succeeded"
-        }
+        completed: set[str] = set()
+        for row in self.durable.get_runtime_snapshot(self.principal, run_id)["steps"]:
+            # PG steps rows carry step_id + output_json; SQLite rows carry
+            # id ("run_id:step_id") + status. Normalise both shapes.
+            raw = row.get("step_id") or row.get("id") or ""
+            if raw.startswith(f"{run_id}:"):
+                raw = raw[len(run_id) + 1:]
+            if not raw:
+                continue
+            if row.get("status") == "succeeded" or row.get("output_json"):
+                completed.add(raw)
+        return completed
 
     def _run_status(self, run_id: str) -> str:
-        return self.durable.get_runtime_snapshot(run_id)["run"]["status"]
+        return self.durable.get_runtime_snapshot(self.principal, run_id)["run"]["status"]
 
     def _lease_expiry(self) -> str:
         from datetime import datetime, timedelta, timezone
@@ -277,10 +287,10 @@ class ControlledToolsResearchProcessor:
             estimated_cost=step.get("estimated_cost", 1),
         )
         decision = self.policy.authorize(
-            route=self._route, run=self.durable.get_runtime_snapshot(run_id)["run"],
+            route=self._route, run=self.durable.get_runtime_snapshot(self.principal, run_id)["run"],
             entity_confirmed=True, plan_version=self.plan_version,
             step=ps, budget_limit=self.budget_limit, lease_token=self.lease_token,
-            reserve=True,
+            reserve=True, principal=principal,
         )
         if not decision.allowed:
             raise RuntimeError(f"step {step['id']} denied: {','.join(decision.reason_codes)}")
@@ -340,7 +350,36 @@ class ControlledToolsResearchProcessor:
             data = output.get("data")
             if not isinstance(data, list):
                 continue
-            for index, item in enumerate(data, start=1):
+            source_url = output.get("source_url") or ""
+            publisher = "东方财富" if step_id == "fetch_statements" else ""
+            flat_items: list[dict] = []
+            if step_id == "fetch_statements":
+                # Flatten one StatementRow per period into one item per metric
+                # so every canonical field becomes a citable claim.
+                for row in data:
+                    if not isinstance(row, dict):
+                        continue
+                    period = row.get("period") or ""
+                    for key, metric in (row.get("metrics") or {}).items():
+                        if not isinstance(metric, dict) or metric.get("value") is None:
+                            continue
+                        label = str(metric.get("label") or key)
+                        value = metric["value"]
+                        unit = str(metric.get("unit") or "")
+                        flat_items.append({
+                            "period": period,
+                            "name": label,
+                            "value": value,
+                            "unit": unit,
+                            "title": f"{period} {label}",
+                            "excerpt": f"{label} = {value}{unit} ({period})".strip(),
+                            "url": source_url,
+                            "publisher": publisher,
+                        })
+            else:
+                flat_items = data
+
+            for index, item in enumerate(flat_items, start=1):
                 if not isinstance(item, dict):
                     continue
                 evidence_id = f"ct-evidence-{run_id}-{step_id}-{index}"
@@ -354,7 +393,13 @@ class ControlledToolsResearchProcessor:
                     "source_title": redact_text(item.get("title") or step_id),
                     "publisher": redact_text(item.get("publisher") or ""),
                     "authority_tier": int(item.get("authority_tier") or 0),
+                    "step_id": step_id,
                 }
+                if step_id == "fetch_statements":
+                    identity["metric_key"] = str(item.get("name") or "")
+                    identity["period"] = str(item.get("period") or "")
+                    identity["unit"] = str(item.get("unit") or "")
+                    identity["value"] = item.get("value")
                 if not identity["excerpt"] or not identity["source_uri"]:
                     continue
                 evidence.append(identity)
@@ -371,12 +416,14 @@ class ControlledToolsResearchProcessor:
         # Tool-call outputs are stored by complete_run, but here we re-read
         # the run_steps row's output_json (commit_step path stores it). Look up
         # via the durable snapshot.
-        for row in self.durable.get_runtime_snapshot(run_id)["steps"]:
-            if row["id"].endswith(f":{step_id}") and row.get("output_json"):
-                try:
-                    return json.loads(row["output_json"])
-                except (TypeError, ValueError):
-                    return None
+        for row in self.durable.get_runtime_snapshot(self.principal, run_id)["steps"]:
+            row_id = row.get("id") or row.get("step_id") or ""
+            if row_id.endswith(f":{step_id}") or row_id == step_id:
+                if row.get("output_json"):
+                    try:
+                        return json.loads(row["output_json"])
+                    except (TypeError, ValueError):
+                        return None
         return None
 
     def _item_to_claim(self, run_id, step_id, item, evidence_id):
@@ -385,26 +432,33 @@ class ControlledToolsResearchProcessor:
             value = item.get("price")
             unit = item.get("unit") or ""
             text = f"{name} 现价 {value}{unit}".strip()
-            claim_id = f"ct-claim-{run_id}-{step_id}-q"
         elif step_id == "calculate_metrics":
             name = item.get("name")
             value = item.get("value")
             unit = item.get("unit") or ""
             text = f"{name} = {value}{unit}".strip()
-            claim_id = f"ct-claim-{run_id}-{step_id}-{abs(hash(str(item))) % 10000}"
         elif step_id == "extract_facts":
             name = item.get("name"); value = item.get("value"); unit = item.get("unit") or ""
             period = item.get("period") or ""
             text = f"{name}={value}{unit} ({period})".strip()
-            claim_id = f"ct-claim-{run_id}-{step_id}-{abs(hash(str(item))) % 10000}"
+        elif step_id == "fetch_statements":
+            name = item.get("name") or "指标"
+            value = item.get("value"); unit = item.get("unit") or ""
+            period = item.get("period") or ""
+            text = f"{name} = {value}{unit} ({period})".strip()
         elif step_id in {"search_filings", "retrieve_documents"}:
             title = item.get("title") or "源材料"
             text = f"参考：{title}"
-            claim_id = f"ct-claim-{run_id}-{step_id}-{abs(hash(str(item))) % 10000}"
         else:
             return None
+        # evidence_id already encodes run_id + step_id + stable index; deriving
+        # the claim id from it guarantees uniqueness and replay stability.
+        claim_id = f"ct-claim-{evidence_id}"
         return {"id": claim_id, "text": text, "status": "supported", "confidence": 0.9,
-                "evidence_ids": [evidence_id]}
+                "evidence_ids": [evidence_id],
+                "period": item.get("period") or "",
+                "unit": item.get("unit") or "",
+                "currency": item.get("currency") or ""}
 
     # ------------------------------------------------------------------ main
 
@@ -449,7 +503,7 @@ class ControlledToolsResearchProcessor:
         if self._run_status(run_id) == "running":
             self.durable.transition(
                 principal, run_id, from_status="running", to_status="completed",
-                expected_version=int(self.durable.get_runtime_snapshot(run_id)["run"]["state_version"]),
+                expected_version=int(self.durable.get_runtime_snapshot(self.principal, run_id)["run"]["state_version"]),
             )
 
     # ------------------------------------------------------------------ internals
@@ -483,7 +537,7 @@ class ControlledToolsResearchProcessor:
 
     def _synthesize_report(self, principal, run_id, plan):
         from datetime import datetime, timezone
-        snapshot = self.durable.get_runtime_snapshot(run_id)
+        snapshot = self.durable.get_runtime_snapshot(self.principal, run_id)
         run = snapshot["run"]
         evidence, claims = self._collect_evidence_and_claims(run_id, self.plan_version, {})
 
@@ -491,32 +545,88 @@ class ControlledToolsResearchProcessor:
         allowed_scopes = {"public"}
         verified = verifier.verify(
             [self._to_claim_candidate(run_id, c) for c in claims],
-            [self._to_evidence_item(e) for e in evidence],
+            [self._to_evidence_item(e, run_id) for e in evidence],
             allowed_access_scopes=allowed_scopes,
         ) if claims else []
         reportable = [v for v in verified if v.status in {"supported", "partially_supported"}]
+        financial_metrics = [
+            {
+                "period": e.get("period") or "",
+                "name": e.get("metric_key") or e.get("source_title") or "",
+                "value": e.get("value"),
+                "unit": e.get("unit") or "",
+            }
+            for e in evidence
+            if e.get("step_id") == "fetch_statements" and e.get("value") is not None
+        ]
 
-        reporter = CitationConstrainedReporter()
         company = run.get("company") or "研究对象"
         question = plan.get("goal") or "公司研究"
-        draft = reporter.build_deterministic(
-            company=company, question=question, claims=verified, evidence=[self._to_evidence_item(e) for e in evidence],
-        )
-        markdown, report_json, citations = reporter.render(
-            draft, verified, [self._to_evidence_item(e) for e in evidence],
-        )
 
-        snapshot = self.durable.get_runtime_snapshot(run_id)
+        # Try LLM synthesis first; fall back to the deterministic reporter
+        # when the API key is absent or the model call fails. The fallback
+        # keeps the controlled-tools promise: never fabricate a report.
+        llm_evidence = [
+            {
+                "url": item.get("source_uri") or "",
+                "title": item.get("source_title") or "",
+                "publisher": item.get("publisher") or "",
+                "excerpt": item.get("excerpt") or "",
+            }
+            for item in evidence
+        ]
+        synthesized: dict[str, Any] | None = None
+        synthesizer = self.synthesizer
+        if synthesizer is None:
+            from backend.synthesizer import DeepSeekReportSynthesizer
+            synthesizer = DeepSeekReportSynthesizer.from_env()
+        if synthesizer is not None and llm_evidence:
+            try:
+                synthesized = asyncio.run(synthesizer.synthesize(
+                    company=company, question=question, evidence=llm_evidence,
+                ))
+            except Exception:
+                synthesized = None
+
+        if synthesized:
+            markdown, report_json, citations = self._llm_report_to_output(
+                synthesized, evidence, company, question,
+            )
+        else:
+            reporter = CitationConstrainedReporter()
+            draft = reporter.build_deterministic(
+                company=company, question=question, claims=verified,
+                evidence=[self._to_evidence_item(e, run_id) for e in evidence],
+            )
+            markdown, report_json, citations = reporter.render(
+                draft, verified, [self._to_evidence_item(e, run_id) for e in evidence],
+            )
+
+        snapshot = self.durable.get_runtime_snapshot(self.principal, run_id)
         version = int(snapshot["run"]["state_version"])
+        def _persist_claim_status(status: str) -> str:
+            # Map the richer verifier status set onto the artifact persistence
+            # vocabulary (supported / insufficient / contradicted).
+            if status in {"supported", "partially_supported"}:
+                return "supported"
+            if status == "unsupported":
+                return "insufficient"
+            if status == "conflicted":
+                return "contradicted"
+            return "insufficient"
+
         self.artifacts.persist_verified_evidence(principal, run_id, lease_token=self.lease_token,
                                                 evidence=evidence, claims=[
-            {"id": v.id, "text": v.text, "status": v.status, "confidence": v.confidence,
-             "evidence_ids": v.evidence_ids} for v in verified
+            {"id": v.id, "text": v.text, "status": _persist_claim_status(v.status),
+             "confidence": v.confidence, "evidence_ids": v.evidence_ids} for v in verified
         ])
-        self.artifacts.complete_report(
-            principal, run_id, lease_token=self.lease_token,
-            expected_version=version, markdown=markdown,
-            report={
+        if synthesized:
+            # LLM synthesis already produced the full report contract;
+            # keep its summary / sections / provider / limitations.
+            report_payload = report_json
+            report_payload["financial_metrics"] = financial_metrics
+        else:
+            report_payload = {
                 "complete": True, "synthetic": False,
                 "execution_profile": self.execution_profile,
                 "title": f"{company} 财报研究",
@@ -524,15 +634,46 @@ class ControlledToolsResearchProcessor:
                 "sections": self._render_sections(verified, evidence, citations),
                 "provider": "controlled_tools",
                 "tool_count": len(evidence),
+                "financial_metrics": financial_metrics,
                 "limitations": [
                     "non-official public APIs (cninfo / tencent) with explicit degradation",
                     "deterministic tools only, no LLM synthesis",
                 ],
-            },
-            citations=[{
-                "claim_id": c["claim_id"], "evidence_id": c["evidence_id"],
-                "evidence_hash": c.get("evidence_hash", ""), "claim_hash": c.get("claim_hash", ""),
-            } for c in citations],
+            }
+        def _hash_text(value: str) -> str:
+            import hashlib
+            return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+        def _hash_json(value) -> str:
+            import json as _json
+            return _hash_text(_json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+        evidence_by_id = {e.get("id"): e for e in evidence}
+        claim_by_id = {v.id: v for v in verified}
+        final_citations = []
+        for c in citations:
+            ev = evidence_by_id.get(str(c["evidence_id"])) or {}
+            clean_ev = {
+                "id": str(ev.get("id") or c["evidence_id"]),
+                "excerpt": str(ev.get("excerpt") or ""),
+                "source_uri": str(ev.get("source_uri") or ""),
+                "source_title": str(ev.get("source_title") or ""),
+                "publisher": str(ev.get("publisher") or ""),
+                "authority_tier": int(ev.get("authority_tier") or 0),
+            }
+            claim = claim_by_id.get(str(c["claim_id"]))
+            claim_text = str(claim.text if claim is not None else "")
+            final_citations.append({
+                "claim_id": str(c["claim_id"]),
+                "evidence_id": str(c["evidence_id"]),
+                "evidence_hash": _hash_json(clean_ev),
+                "claim_hash": _hash_text(claim_text),
+            })
+        self.artifacts.complete_report(
+            principal, run_id, lease_token=self.lease_token,
+            expected_version=version, markdown=markdown,
+            report=report_payload,
+            citations=final_citations,
         )
 
     @staticmethod
@@ -541,18 +682,119 @@ class ControlledToolsResearchProcessor:
         return ClaimCandidate(
             id=claim["id"], run_id=run_id, text=claim["text"],
             evidence_ids=claim.get("evidence_ids", []),
-            period="", unit="",
+            period=claim.get("period") or "",
+            unit=claim.get("unit") or "",
+            currency=claim.get("currency") or "",
         )
 
     @staticmethod
-    def _to_evidence_item(evidence):
+    def _to_evidence_item(evidence, run_id=""):
+        import hashlib
+        from datetime import datetime, timezone
         from backend.schemas import EvidenceItem
+        raw = str(evidence.get("excerpt") or evidence.get("source_uri") or "")
+        content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         return EvidenceItem(
-            id=evidence["id"], run_id="", excerpt=evidence["excerpt"],
-            source_uri=evidence["source_uri"], title=evidence["source_title"],
-            publisher=evidence["publisher"], authority_tier=evidence["authority_tier"],
-            content_sha256="",
+            id=evidence["id"], run_id=run_id or str(evidence.get("run_id") or ""),
+            excerpt=evidence["excerpt"], source_uri=evidence["source_uri"],
+            title=evidence["source_title"] or "未命名来源", publisher=evidence["publisher"] or "未知来源",
+            source_type=evidence.get("source_type") or "web",
+            authority_tier=evidence["authority_tier"],
+            content_sha256=content_hash,
+            access_scope=evidence.get("access_scope") or "public",
+            retrieved_at=evidence.get("retrieved_at") or datetime.now(timezone.utc).isoformat(),
+            period=evidence.get("period") or None,
         )
+
+
+    @staticmethod
+    def _llm_report_to_output(
+        synthesized: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        company: str,
+        question: str,
+    ) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
+        """Map LLM synthesis JSON back to the durable report contract.
+
+        Citations are derived from ``source_urls`` inside each section and
+        bound to the evidence id that owns that URL. A URL not present in
+        the supplied evidence is silently dropped (the prompt forbids it,
+        but the sanitizer enforces it too).
+        """
+        url_to_evidence: dict[str, dict[str, Any]] = {}
+        for item in evidence:
+            url = str(item.get("source_uri") or item.get("url") or "").strip()
+            if url:
+                url_to_evidence[url] = item
+
+        sections_out: list[dict[str, Any]] = []
+        citations: list[dict[str, Any]] = []
+        citation_counter = 0
+        lines = [f"# {company}研究报告", "", str(synthesized.get("summary") or "")]
+
+        raw_sections = synthesized.get("sections") or []
+        for section in raw_sections:
+            if not isinstance(section, dict):
+                continue
+            title = str(section.get("title") or "研究发现")
+            content = str(section.get("content") or "")
+            source_urls = [
+                url for url in (section.get("source_urls") or [])
+                if isinstance(url, str) and url in url_to_evidence
+            ]
+            section_cites: list[dict[str, Any]] = []
+            section_markers: list[str] = []
+            for url in source_urls:
+                ev = url_to_evidence[url]
+                ev_id = ev.get("id") or url
+                claim_id = f"llm:{ev_id}:{citation_counter}"
+                citation_counter += 1
+                section_cites.append({
+                    "claim_id": claim_id,
+                    "evidence_id": ev_id,
+                    "evidence_hash": "",
+                    "claim_hash": "",
+                })
+                section_markers.append(f"[{citation_counter}]")
+            points = [
+                {
+                    "label": str(point.get("label") or "")[:80],
+                    "text": str(point.get("text") or "")[:2000],
+                }
+                for point in section.get("points") or []
+                if isinstance(point, dict) and point.get("text")
+            ]
+            sections_out.append({
+                "key": f"section_{len(sections_out) + 1}",
+                "title": title,
+                "content": content,
+                "points": points,
+                "source_urls": source_urls,
+            })
+            lines.extend(["", f"## {title}", ""])
+            if content:
+                lines.append(content)
+            for point in points:
+                marker = " ".join(section_markers) if section_markers else ""
+                lines.append(f"- {point['label']}：{point['text']} {marker}".strip())
+            citations.extend(section_cites)
+
+        markdown = "\n".join(lines)
+        report_json = {
+            "complete": True,
+            "synthetic": False,
+            "execution_profile": "controlled_tools",
+            "provider": synthesized.get("provider") or "deepseek_synthesis",
+            "title": str(synthesized.get("title") or f"{company} 财报研究"),
+            "summary": str(synthesized.get("summary") or ""),
+            "sections": sections_out,
+            "tool_count": len(evidence),
+            "limitations": [
+                "non-official public APIs (cninfo / tencent) with explicit degradation",
+                "LLM synthesis is citation-constrained to persisted evidence only",
+            ],
+        }
+        return markdown, report_json, citations
 
     def _render_summary(self, verified, evidence):
         if not verified:

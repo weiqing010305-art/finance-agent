@@ -14,6 +14,7 @@ from backend.auth.models import PrincipalContext
 from backend.db.metadata import (
     job_outbox, jobs,
     research_checkpoints_pg, research_events_pg, research_leases_pg,
+    execution_authorizations_pg,
     research_plans_pg, research_runs_pg, research_steps_pg,
 )
 from backend.db.session import principal_transaction
@@ -205,6 +206,122 @@ class PostgresDurableRepository:
             )).order_by(research_plans_pg.c.version.desc()).limit(1)).scalar_one_or_none()
         return json.loads(raw) if raw is not None else None
 
+    def get_runtime_snapshot(self, principal: PrincipalContext, run_id: str) -> dict:
+        """Return a durable-run snapshot compatible with the SQLite
+        ``Repository.get_runtime_snapshot`` contract used by research
+        processors (run / plan / checkpoint / lease / steps / counts).
+        """
+        with principal_transaction(self.engine, principal) as connection:
+            run_row = connection.execute(select(research_runs_pg).where(and_(
+                research_runs_pg.c.id == run_id,
+                research_runs_pg.c.tenant_id == principal.tenant_id,
+            ))).mappings().one_or_none()
+            if run_row is None:
+                raise KeyError(run_id)
+            plan_row = connection.execute(select(research_plans_pg.c.plan_json).where(and_(
+                research_plans_pg.c.run_id == run_id,
+                research_plans_pg.c.tenant_id == principal.tenant_id,
+            )).order_by(research_plans_pg.c.version.desc()).limit(1)).mappings().one_or_none()
+            checkpoint_row = connection.execute(select(research_checkpoints_pg).where(and_(
+                research_checkpoints_pg.c.run_id == run_id,
+                research_checkpoints_pg.c.tenant_id == principal.tenant_id,
+            ))).mappings().one_or_none()
+            lease_row = connection.execute(select(research_leases_pg).where(and_(
+                research_leases_pg.c.run_id == run_id,
+                research_leases_pg.c.tenant_id == principal.tenant_id,
+            ))).mappings().one_or_none()
+            step_rows = connection.execute(select(research_steps_pg).where(and_(
+                research_steps_pg.c.run_id == run_id,
+                research_steps_pg.c.tenant_id == principal.tenant_id,
+            )).order_by(research_steps_pg.c.created_at)).mappings().all()
+        plan = dict(plan_row) if plan_row else None
+        if plan:
+            plan.update(json.loads(plan.pop("plan_json")))
+        checkpoint = dict(checkpoint_row) if checkpoint_row else None
+        if checkpoint:
+            checkpoint["state"] = json.loads(checkpoint.pop("state_json"))
+        steps = []
+        for row in step_rows:
+            step = dict(row)
+            step["id"] = f"{run_id}:{step.get('step_id')}"
+            step["output_json"] = step.pop("output_json")
+            step["input_json"] = step.pop("input_json")
+            steps.append(step)
+        return {
+            "run": dict(run_row),
+            "plan": plan,
+            "checkpoint": checkpoint,
+            "lease": dict(lease_row) if lease_row else None,
+            "steps": steps,
+            "tool_calls": [],
+            "counts": {"steps": len(steps), "tool_calls": 0},
+        }
+
+    def record_execution_authorization(
+        self,
+        *,
+        run_id: str,
+        plan_version: int,
+        step_id: str,
+        tool_name: str,
+        allowed: bool,
+        reason_codes: list[str],
+        estimated_cost: int,
+        budget_before: int,
+        capability_token: str | None = None,
+        effective_cost: int | None = None,
+        budget_limit: int | None = None,
+        principal=None,
+    ) -> dict:
+        """Persist a policy authorization decision for the controlled-tools
+        pipeline. ``budget_limit`` is accepted for interface compatibility
+        with the SQLite repository but the PG durable run stores the
+        charged budget via ``commit_step``.
+        """
+        if principal is None:
+            raise ValueError("record_execution_authorization requires principal")
+        charged_cost = int(estimated_cost if effective_cost is None else effective_cost)
+        now = _now()
+        tenant_id = principal.tenant_id
+        operation = {
+            "run_id": run_id, "plan_version": plan_version, "step_id": step_id,
+            "tool_name": tool_name, "decision": "allow" if allowed else "deny",
+            "reason_codes": reason_codes, "estimated_cost": estimated_cost,
+            "budget_before": budget_before, "effective_cost": charged_cost,
+        }
+        with principal_transaction(self.engine, principal) as connection:
+            existing = connection.execute(select(execution_authorizations_pg).where(and_(
+                execution_authorizations_pg.c.run_id == run_id,
+                execution_authorizations_pg.c.tenant_id == tenant_id,
+                execution_authorizations_pg.c.plan_version == plan_version,
+                execution_authorizations_pg.c.step_id == step_id,
+            ))).mappings().one_or_none()
+            if existing is not None:
+                decoded = dict(existing)
+                decoded["reason_codes"] = json.loads(decoded.pop("reason_codes_json"))
+                identity = {key: decoded[key] for key in operation}
+                if identity != operation:
+                    raise DurableConflict("authorization idempotency conflict")
+                return decoded
+            connection.execute(insert(execution_authorizations_pg).values(
+                run_id=run_id, tenant_id=tenant_id, plan_version=plan_version,
+                step_id=step_id, tool_name=tool_name,
+                decision="allow" if allowed else "deny",
+                reason_codes_json=_json(reason_codes),
+                estimated_cost=estimated_cost, budget_before=budget_before,
+                effective_cost=charged_cost, capability_token=capability_token,
+                created_at=now,
+            ))
+            result = connection.execute(select(execution_authorizations_pg).where(and_(
+                execution_authorizations_pg.c.run_id == run_id,
+                execution_authorizations_pg.c.tenant_id == tenant_id,
+                execution_authorizations_pg.c.plan_version == plan_version,
+                execution_authorizations_pg.c.step_id == step_id,
+            ))).mappings().one()
+        decoded = dict(result)
+        decoded["reason_codes"] = json.loads(decoded.pop("reason_codes_json"))
+        return decoded
+
     def get_completed_step(
         self, principal: PrincipalContext, run_id: str, step_id: str,
     ) -> dict | None:
@@ -262,7 +379,7 @@ class PostgresDurableRepository:
     def commit_step(
         self, principal: PrincipalContext, run_id: str, *, lease_token: str,
         step_id: str, step_input: dict, step_output: dict, next_pointer: str,
-        progress: int, budget_delta: int,
+        progress: int, budget_delta: int, kind: str | None = None,
     ) -> dict:
         if not 0 <= progress <= 100 or budget_delta < 0:
             raise ValueError("invalid step progress or budget")

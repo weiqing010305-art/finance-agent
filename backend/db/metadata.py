@@ -203,6 +203,24 @@ research_events_pg = Table(
     ForeignKeyConstraint(["run_id", "tenant_id"], ["research_runs_pg.id", "research_runs_pg.tenant_id"],
                          ondelete="CASCADE", name="fk_research_events_run_tenant"),
 )
+execution_authorizations_pg = Table(
+    "execution_authorizations_pg", metadata,
+    Column("run_id", ForeignKey("research_runs_pg.id", ondelete="CASCADE"), primary_key=True),
+    Column("tenant_id", ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True),
+    Column("plan_version", Integer, primary_key=True),
+    Column("step_id", String(128), primary_key=True),
+    Column("tool_name", String(128), nullable=False),
+    Column("decision", String(16), nullable=False),
+    Column("reason_codes_json", Text, nullable=False),
+    Column("estimated_cost", Integer, nullable=False),
+    Column("budget_before", Integer, nullable=False),
+    Column("effective_cost", Integer, nullable=False),
+    Column("capability_token", String(128), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    ForeignKeyConstraint(["run_id", "tenant_id"], ["research_runs_pg.id", "research_runs_pg.tenant_id"],
+                         ondelete="CASCADE", name="fk_exec_auth_run_tenant"),
+)
+
 evidence_items_pg = Table(
     "evidence_items_pg", metadata,
     Column("id", String(128), primary_key=True),

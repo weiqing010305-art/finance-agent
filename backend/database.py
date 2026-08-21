@@ -1665,6 +1665,7 @@ class Repository:
         capability_token: str | None = None,
         effective_cost: int | None = None,
         budget_limit: int | None = None,
+        principal=None,
     ) -> dict[str, Any]:
         charged_cost = int(estimated_cost if effective_cost is None else effective_cost)
         operation = {

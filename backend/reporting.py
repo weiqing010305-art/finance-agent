@@ -62,10 +62,11 @@ class CitationConstrainedReporter:
             limitations.append("存在相互冲突的来源，相关结论未纳入确定性正文。")
         sections = [
             ReportSection(
-                heading="已验证结论",
-                body="\n".join(f"- {claim.text}" for claim in reportable),
-                claim_ids=[claim.id for claim in reportable],
+                heading=claim.text.split("=")[0].strip()[:80] or "已验证结论",
+                body=claim.text,
+                claim_ids=[claim.id],
             )
+            for claim in reportable
         ] if reportable else []
         draft = ReportDraft(
             company=company, question=question,

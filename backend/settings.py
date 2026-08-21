@@ -69,7 +69,7 @@ class RuntimeSettings:
             if item.strip()
         )
         executor = (values.get("FINSCOPE_FORMAL_EXECUTOR") or "synthetic_smoke").strip()
-        if executor not in {"synthetic_smoke", "real_rag_local"}:
+        if executor not in {"synthetic_smoke", "real_rag_local", "controlled_tools"}:
             raise SettingsError("FINSCOPE_FORMAL_EXECUTOR is not supported")
         collection = (values.get("MILVUS_COLLECTION") or "finance_agent_chunks_v1").strip()
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,254}", collection):
