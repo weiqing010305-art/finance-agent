@@ -146,6 +146,38 @@ class QuoteResult(ToolResult):
     data: list[QuoteItem] = Field(default_factory=list)
 
 
+class FetchFinancialStatementsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(min_length=1, max_length=32)
+    market: str = Field(default="", max_length=16)
+    periods: int = Field(default=4, ge=1, le=20)
+
+
+class StatementMetric(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=80)
+    value: float
+    unit: str = Field(default="raw", max_length=20)
+    source_field: str = Field(min_length=1, max_length=80)
+    report_period: str | None = None
+
+
+class StatementRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    period: str | None = None
+    report_type: str | None = None
+    notice_date: str | None = None
+    currency: str = "CNY"
+    unit: str = "raw"
+    metrics: dict[str, StatementMetric] = Field(default_factory=dict)
+
+
+class FinancialStatementsResult(ToolResult):
+    data: list[StatementRow] = Field(default_factory=list)
+    coverage: Literal["a_share", "unsupported"] = "a_share"
+    source_url: str | None = None
+
+
 class DocumentSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str
@@ -419,6 +451,16 @@ def build_default_registry(
             output_model=QuoteResult,
         ),
         get_quote,
+    )
+    from backend.financial_statements import fetch_financial_statements
+    registry.register(
+        ToolSpec(
+            name="fetch_financial_statements", version="1", risk_level="low",
+            timeout_seconds=15, max_retries=2, idempotent=True, cost_class=2,
+            requires_confirmation=False, input_model=FetchFinancialStatementsInput,
+            output_model=FinancialStatementsResult,
+        ),
+        fetch_financial_statements,
     )
     registry.register(
         ToolSpec(

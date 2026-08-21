@@ -30,6 +30,7 @@ def test_default_registry_contains_seven_contracts_and_hybrid_milvus_metadata():
     assert registry.names() == {
         "search_filings", "search_web", "retrieve_documents", "read_document",
         "extract_financial_facts", "calculate_financial_metrics", "get_quote",
+        "fetch_financial_statements",
     }
     retrieval = registry.get("retrieve_documents")
     assert retrieval.input_model is HybridRetrievalInput

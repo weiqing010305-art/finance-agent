@@ -99,7 +99,7 @@ def build_formal_research_router(
                 }
             elif execution_profile == "controlled_tools":
                 if payload.budget_limit < 10:
-                    raise PlannerError("controlled-tools plan requires budget_limit >= 10")
+                    raise PlannerError("controlled-tools plan requires budget_limit >= 12")
                 plan = {
                     "version": 1, "goal": payload.question,
                     "entity": entity.model_dump(mode="json"),
@@ -120,6 +120,13 @@ def build_formal_research_router(
                             "max_attempts": 1, "estimated_cost": 1,
                         },
                         {
+                            "id": "fetch_statements", "kind": "tool",
+                            "tool_name": "fetch_financial_statements", "dependencies": [],
+                            "input": {"symbol": payload.symbol, "market": payload.market, "periods": 4},
+                            "success_criteria": ["fetch headline financial metrics or degrade to filings"],
+                            "max_attempts": 1, "estimated_cost": 2,
+                        },
+                        {
                             "id": "retrieve_documents", "kind": "tool",
                             "tool_name": "retrieve_documents", "dependencies": [],
                             "input": {"company": payload.company, "question": payload.question, "top_k": 5},
@@ -128,7 +135,7 @@ def build_formal_research_router(
                         },
                         {
                             "id": "extract_facts", "kind": "tool",
-                            "tool_name": "extract_financial_facts", "dependencies": ["search_filings", "retrieve_documents"],
+                            "tool_name": "extract_financial_facts", "dependencies": ["search_filings", "retrieve_documents", "fetch_statements"],
                             "input": {"periods": 3},
                             "success_criteria": ["extract facts with period unit currency and source"],
                             "max_attempts": 1, "estimated_cost": 3,

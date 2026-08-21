@@ -109,8 +109,9 @@ def test_controlled_tools_profile_persists_full_plan_and_job_kind():
     )
     assert plan["execution_profile"] == "controlled_tools"
     assert [step["id"] for step in plan["steps"]] == [
-        "search_filings", "get_quote", "retrieve_documents",
-        "extract_facts", "calculate_metrics", "synthesize_verified_report",
+        "search_filings", "get_quote", "fetch_statements",
+        "retrieve_documents", "extract_facts", "calculate_metrics",
+        "synthesize_verified_report",
     ]
     viewed = client.get(f"/api/research/{body['run_id']}").json()
     assert viewed["execution_profile"] == "controlled_tools"
