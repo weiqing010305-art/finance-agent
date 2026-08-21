@@ -150,6 +150,11 @@
     .section h3{margin:30px 0 10px;font-size:19px;line-height:1.35;letter-spacing:-.015em}
     .section-content{max-width:68ch;color:var(--text);font-size:15px;line-height:1.82}
     .section-content p{margin:0 0 14px;text-wrap:pretty}
+    .metrics-table{width:100%;border-collapse:collapse;margin:10px 0 18px;font-size:13px}
+    .metrics-table th,.metrics-table td{border:1px solid var(--line);padding:8px 10px;text-align:left}
+    .metrics-table th{background:var(--paper);color:var(--ink);font-weight:600}
+    .metrics-table tr:nth-child(even) td{background:rgba(20,90,70,.03)}
+    .metrics-table td:last-child{color:var(--muted);white-space:nowrap}
     .research-points{margin:12px 0 18px;padding-left:1.45em}
     .research-points li{margin:8px 0;padding-left:.3em;text-wrap:pretty}
     .research-points li::marker{color:var(--muted);font-weight:650}
@@ -768,6 +773,15 @@
       });
     }
     
+    function financialMetricsMarkup(metrics) {
+      if (!Array.isArray(metrics) || !metrics.length) return '';
+      const rows = metrics.map(metric => {
+        const value = (metric.value === null || metric.value === undefined) ? '—' : escapeHtml(String(metric.value));
+        return `<tr><td>${escapeHtml(metric.name || '')}</td><td>${value}${escapeHtml(metric.unit || '')}</td><td>${escapeHtml(metric.period || '')}</td></tr>`;
+      }).join('');
+      return `<section class="section"><h3>财务指标摘要</h3><div class="table-wrap"><table class="metrics-table"><thead><tr><th>指标</th><th>数值</th><th>报告期</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+    }
+
     function renderReport(task) {
       const report = task.report || task.result;
       if (!report) return;
@@ -785,7 +799,7 @@
       const summary = report.summary || '本次研究在受控工具链中执行；巨潮/腾讯/检索任一环节失败时已显式降级。';
       ui.reportSummary.innerHTML = `<strong>核心结论：</strong>${escapeHtml(summary)} ${summaryCitations}`;
       const sections = Array.isArray(report.sections) ? report.sections : [];
-      ui.reportBody.innerHTML = sections.map(section => {
+      ui.reportBody.innerHTML = financialMetricsMarkup(report.financial_metrics) + sections.map(section => {
         const sectionCites = (section.citations || []).map(number => citationMarkup(number, evidenceMap)).join('');
         return `<section class="section"><h3>${escapeHtml(section.title || '')}</h3><div class="section-actions"><button data-prompt="追问：${escapeHtml(section.title || '')}">追问</button><button data-prompt="重新研究：${escapeHtml(section.title || '')}">重新研究本节</button></div><div class="section-content">${formatResearchContent(section.content, section.points || [])}${sectionCites ? `<div class="section-citations">${sectionCites}</div>` : ''}</div></section>`;
       }).join('');
