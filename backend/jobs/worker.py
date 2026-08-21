@@ -53,7 +53,11 @@ def _configure_formal_worker() -> None:
     synthetic_processor = SyntheticSmokeResearchProcessor(durable, artifacts)
     handlers = {"synthetic_smoke_research": synthetic_processor}
     if profile == "controlled_tools":
-        handlers["controlled_tools_research"] = ControlledToolsResearchProcessor(durable, artifacts)
+        from backend.synthesizer import DeepSeekReportSynthesizer
+        handlers["controlled_tools_research"] = ControlledToolsResearchProcessor(
+            durable, artifacts,
+            synthesizer=DeepSeekReportSynthesizer.from_env(),
+        )
     if profile == "real_rag_local":
         from backend.authorized_retrieval import AuthorizedChunkCatalog, AuthorizedMilvusRetriever
         from backend.embeddings import BgeLargeZhEmbeddingProvider
