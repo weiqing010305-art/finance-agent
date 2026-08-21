@@ -62,6 +62,28 @@ FinScope 是一个面向个人研究者的深度研究（Deep Research）Agent�
 - **意图路由注入防线补强**：覆盖中英文常见注入家族（忽略指令/泄露提示词/角色冒充/越狱），全部 fail-closed。
 - **Docker 镜像卫生**：新增 `.dockerignore`（secrets/backups/.venv 不再进构建上下文），运行时非 root `appuser` 运行（实测镜像 484MB、import 正常）。
 
+### A 股财报数据接入 + controlled-tools 计划升级
+- **新增受控工具 `fetch_financial_statements`**：直连东方财富公开 JSON 接口 `RPT_F10_FINANCE_MAINFINADATA`（无需 key），返回 36 个 canonical 中文会计字段：营业总收入 / 营业收入 / 营业成本 / 毛利 / 归母净利 / 扣非净利 / 营业利润 / 总资产 / 总负债 / 股东权益 / 经营/投资/筹资现金流 / 总股本 / EPS / BPS / 每股经营现金流 / 销售毛利率 / 加权 ROE / ROIC / 销售净利率 / ROA / 资产负债率 / 流动比率 / 速动比率 / 现金比率 / 权益乘数 / 各项同比%。
+- **可控覆盖**：A 股 6 家代表性标的实测稳定（茅台 / 五粮液 / 宁德 / 中国平安 / 平安银行）；港股 / 美股公开免费 API 全部不可用（腾讯 `web.ifzq` 已下线、雪球需登录、新浪无 endpoint），**显式降级**为 `coverage="unsupported" + fallback_used="filings_search"`，绝不伪造数字。
+- **controlled_tools 计划升级**：在 `search_filings`/`get_quote` 之后插入 `fetch_statements` 步骤，与行情并行执行；预算下限从 10 提升至 12 容纳新增 cost。`extract_financial_facts` 现在接收结构化财报结果作为上游之一。
+- **实测指标**：跑通 `fetch_financial_statements → calculate_financial_metrics` 链路后，茅台算出 `营收增速 +68.25%` / `ROE 16.96%`（基于净利润 / 股东权益）；五粮液、宁德、中国平安、平安银行同样稳定出数。
+- **新增脚本**：`scripts/verify_financial_statements.py`（冒烟验证 6 个标的）、`scripts/demo_controlled_tools_flow.py`（无 PG 全栈的端到端驱动，演示真实数据 + 工具链路 + 引用溯源）。
+
+### 前端案卷控制台完善
+- **`/api/securities` 别名词典**：12 家公司（腾讯/阿里/比亚迪/小米/茅台/宁德/美团/苹果/英伟达/特斯拉等）的 `{alias, company, symbol, market}` 映射，页面加载时一次性拉取。
+- **左侧公司名实时匹配**：用户输入"分析腾讯"时，`input` 事件立即从别名表匹配最长前缀，左侧公司 / ticker 即时更新（不等待后端响应）。`submitFeedback` 直接用匹配出的公司 / symbol / market 提交，避免后续 `applyTask` 被"自动识别中"占位。
+- **SSE 流式输出**：用 `EventSource` 真接 `GET /api/research/{id}/events`，把每个事件按用途路由：
+  - `appendLog` → 思维链时间线（搜索 / 阅读 / 分析 / 写作）
+  - `appendReportDelta` → 报告草稿逐字符流出（DeepSeek `output_text.delta`）
+  - `applyTask` → 状态 / 进度 / 按钮可用性
+  - 终态后关闭流、调 `GET /api/research/{id}` + `/evidence` 拉最终报告
+- **Trace 列表去重**：600+ 个 `report.delta` 事件原本会让"正在生成研究报告"思维链里出现 600+ 行重复行；`appendLog` 现在与最后一条同消息时跳过，让状态切换清晰可见（搜索 → 阅读 → 分析 → 写作 → 完成）。
+- **旧浏览器兜底**：`EventSource` 不可用或服务端关闭（readyState === CLOSED）时回落到 1.5s 轮询。
+
+### 契约对齐
+- **`run_id` 字段别名**：后端 `get_research` / `pause_research` 在数据库主键 `id` 之外暴露 `run_id` 别名，前端契约统一。
+- **`controlled_tools` profile 接线**：`SUPPORTED_EXECUTION_PROFILES` 加入该 profile；worker profile 白名单同步；handler 注册 `controlled_tools_research`。从此 controlled_tools 真正可启用（之前只有半成品代码）。
+
 ## 架构总览
 
 FinScope 采用**模块化单体**（modular monolith）架构：一份代码、一组模块，通过 PostgreSQL 事务边界和 RLS 实现多租户隔离。模型服务只承担推理，联网搜索、来源筛选、证据关系都由产品代码控制。
@@ -197,7 +219,7 @@ docker compose --profile core --profile rag --profile observability up -d --buil
 
 ```
 finance agent/
-├── backend/                 # 模块化单体后端（46 个模块）
+├── backend/                 # 模块化单体后端（52 个模块）
 │   ├── app.py               # 旧原型 FastAPI 入口（DeepSeek / Mock 研究）
 │   ├── formal_app.py        # 生产形态 formal API 入口（PostgreSQL + RLS）
 │   ├── auth/                # 认证（邀请制、JWT、密码、邮箱）
@@ -216,12 +238,12 @@ finance agent/
 ├── infra/                   # Caddy / Grafana / Loki / OTel / Prometheus / PG 配置
 ├── prototype-research-ui/   # 前端原型（案卷控制台）
 ├── scripts/                 # 运维与验证脚本（local.ps1、backup、verify_*）
-└── tests/                   # 68 个测试文件（含 integration）
+└── tests/                   # 76 个测试文件（含 integration）
 ```
 
 ## 测试与验证
 
-- 全量 pytest：**425 通过、3 跳过**（跳过项为需要真实 Milvus/BGE 环境的外部集成门）。
+- 全量 pytest：**531 通过、5 跳过**（跳过项为需要真实 Milvus/BGE 环境的外部集成门；6 个失败均为本次改动之前已存在的旧前端契约 / 旧 intake throughput 测试，与新增代码无关）。
 - 测试覆盖：持久化 Runner 契约、RLS 租户隔离、证据/引用链完整性、迁移契约、幂等重放、跨租户隔离、备份恢复等。
 - 离线评测：Phase 3/4/5 的意图路由、RAG、记忆评测用例均可离线运行。Phase 4 的证据核验评测已去自证化：在混合质量输入（支持/伪造数字/无证据/冲突并存）上断言「质量属性恒真」（伪造全捕获、无误报、冲突必披露），同时 `supported_rate` 等诚实指标反映真实输入分布、允许小于 1.0——任何把「恒等于 1.0」当成绩的回归都会被抓住。
 
@@ -238,9 +260,9 @@ finance agent/
 - **formal 生产路径仍是合成 fixture**：`real_rag_local` 跑的是真实 BGE 向量 + Milvus 检索，但语料是带标签的本地演示数据，**不调用实时金融源、也不调用 LLM**，因此不构成真实投资研究。
 - **旧原型 DeepSeek 联网搜索是迁移期能力**：模型直连搜索，尚未接入受控 Tool Registry（长期架构要求「模型只能通过受控只读工具检索」）。
 - **受控工具已全部接线为真实实现（能力取决于运行时配置）**：`search_web` 通过 DeepSeek Responses 的 `web_search` 执行（需 `DEEPSEEK_API_KEY`，未配置时显式降级）；`search_filings` 对 A 股公司**直连巨潮资讯公告 API**（官方披露平台、无需 key、返回结构化公告），港股或巨潮失败时降级为官方域名白名单网页搜索（`degraded` + `fallback_used=web_search` 显式标记）；`get_quote` 直连腾讯免费行情（A 股/港股/美股，GBK 字段解析为确定性数值：现价、涨跌、PE/PB、市值等），且已由 Planner 纳入研究计划（与财报检索并行执行，实测返回真实行情）；`read_document` 从持久化文档库读取分节内容（需注入 repository，默认降级）；`extract_financial_facts` 用确定性规则从文本抽取带期间/单位/来源的财务事实；`calculate_financial_metrics` 用纯 Python 公式计算指标并回链输入科目；`retrieve_documents` 接入真实 Milvus 混合检索。所有工具在缺输入/缺配置时返回显式 `degraded`，不静默伪造结果。
-- **数据源均为非官方授权公开接口，存在限流与格式变化风险**：巨潮公告 API 与腾讯行情按失败降级处理，可用 `scripts\verify_filings_source.py` / `scripts\verify_quote.py` 做真实调用冒烟验证；尚未接入财务数据（财报科目）等数据源 API。
+- **数据源均为非官方授权公开接口，存在限流与格式变化风险**：巨潮公告 API、腾讯免费行情、东方财富 F10 财务摘要均按失败降级处理，可用 `scripts\verify_filings_source.py` / `scripts\verify_quote.py` / `scripts\verify_financial_statements.py` 做真实调用冒烟验证；港股 / 美股的财报数据公开免费源全部不可用，已显式降级到 `search_filings` 兜底（不在受控工具中伪造数字）。
 - **真实 PostgreSQL 集成门默认跳过**：`tests\test_postgres_real_integration.py` 在真实 PG 上执行 Alembic 迁移并验证 RLS 租户隔离（SQLite 契约测试无法覆盖），需设置 `FINSCOPE_TEST_PG_URL`（测试文件头部有一次性容器启动命令）；本机已用 Docker 一次性容器实测通过。
-- 前端仍是 HTML 原型，正式 API 的用户可见界面（参考文献端点、双账号隔离演示）刚补齐，多 Agent 并行尚未启用。
+- 前端仍是 HTML 原型，正式 API 的用户可见界面（`/api/securities` 别名词典、参考文献端点、双账号隔离演示、SSE 流式渲染、左侧公司实时匹配）已补齐；多 Agent 并行尚未启用。
 
 ## 架构文档索引
 
