@@ -258,6 +258,13 @@ async def fetch_financial_statements(
         }
     secucode = _normalise_secucode(symbol, market)
     if not secucode:
+        # A-share only via Eastmoney; HK / US route through Tushare Pro
+        # when the operator has set TUSHARE_TOKEN. Without a token the
+        # Tushare handler returns its own degraded response so the
+        # controlled-tools plan degrades to search_filings.
+        if market.strip().upper() in {"HK", "US"}:
+            from backend.tushare_source import fetch_via_tushare
+            return await fetch_via_tushare(payload, context)
         return {
             "status": "empty", "data": [], "evidence": [],
             "coverage": "unsupported",

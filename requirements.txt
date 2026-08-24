@@ -19,3 +19,6 @@ opentelemetry-exporter-otlp-proto-grpc==1.44.0
 prometheus-client==0.25.0
 cryptography==49.0.0
 
+
+# Optional: HK / US financial statements via Tushare Pro (set TUSHARE_TOKEN)
+tushare==1.4.29

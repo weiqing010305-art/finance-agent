@@ -146,7 +146,12 @@ def test_tool_handler_returns_statement_rows_for_a_share():
     assert all(item["publisher"] == "东方财富" for item in out["evidence"])
 
 
-def test_tool_handler_degrades_explicitly_for_hk_symbol():
+def test_tool_handler_routes_hk_to_tushare_when_token_missing():
+    """HK now flows through the Tushare adapter, which itself degrades when
+    TUSHARE_TOKEN is unset. Either way the controlled-tools pipeline must
+    keep its honesty: never fabricate numbers, always name the missing
+    source, and offer a search_filings fallback.
+    """
     async def run():
         return await fetch_financial_statements(
             FetchFinancialStatementsInput(symbol="0700", market="HK", periods=2),
@@ -154,11 +159,10 @@ def test_tool_handler_degrades_explicitly_for_hk_symbol():
 
     out = asyncio.run(run())
     assert out["status"] == "empty"
-    assert out["coverage"] == "unsupported"
-    assert out["degraded"] is True
     assert out["fallback_used"] == "filings_search"
-    assert "not covered" in out["degraded_reason"]
-    assert out["data"] == []
+    assert out["degraded"] is True
+    assert "TUSHARE_TOKEN" in out["degraded_reason"]
+
 
 
 def test_tool_handler_degrades_on_upstream_failure():
