@@ -334,7 +334,10 @@ class ControlledToolsResearchProcessor:
         }
 
     def _collect_price_bars(self, run_id: str) -> list[dict]:
-        """Return the most recent price bars from the fetch_prices step."""
+        """Return the complete OHLCV bars from the fetch_prices step.
+
+        The frontend renders a candlestick chart + volume bars from these.
+        """
         for step in self.steps:
             if step.get("id") != "fetch_prices":
                 continue
@@ -343,11 +346,22 @@ class ControlledToolsResearchProcessor:
                 return []
             data = output.get("data")
             if isinstance(data, list):
-                return [
-                    {"date": str(bar.get("date") or ""), "close": float(bar.get("close") or 0)}
-                    for bar in data
-                    if isinstance(bar, dict) and bar.get("close") is not None
-                ]
+                bars = []
+                for bar in data:
+                    if not isinstance(bar, dict):
+                        continue
+                    try:
+                        bars.append({
+                            "date": str(bar.get("date") or ""),
+                            "open": float(bar.get("open") or 0),
+                            "high": float(bar.get("high") or 0),
+                            "low": float(bar.get("low") or 0),
+                            "close": float(bar.get("close") or 0),
+                            "volume": float(bar.get("volume") or 0),
+                        })
+                    except (TypeError, ValueError):
+                        continue
+                return bars
         return []
 
     def _collect_evidence_and_claims(self, run_id, plan_version, steps_by_id):

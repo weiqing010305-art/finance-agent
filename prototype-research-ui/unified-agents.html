@@ -150,6 +150,7 @@
     .section h3{margin:30px 0 10px;font-size:19px;line-height:1.35;letter-spacing:-.015em}
     .section-content{max-width:68ch;color:var(--text);font-size:15px;line-height:1.82}
     .section-content p{margin:0 0 14px;text-wrap:pretty}
+    .kline-chart{width:100%;height:420px;margin:10px 0 18px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.7)}
     .price-chart{margin:10px 0 18px}
     .price-chart svg{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.7)}
     .price-chart .price-area{fill:rgba(20,90,70,.10)}
@@ -374,6 +375,7 @@
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
   <script>
     const API_BASE = 'http://127.0.0.1:8780/api';
     const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
@@ -792,21 +794,64 @@
 
     function priceBarsMarkup(bars) {
       if (!Array.isArray(bars) || bars.length < 2) return '';
-      const closes = bars.map(bar => Number(bar.close) || 0).filter(value => value > 0);
-      if (closes.length < 2) return '';
-      const width = 640, height = 180, padding = 10;
-      const min = Math.min(...closes), max = Math.max(...closes);
-      const range = max - min || 1;
-      const points = closes.map((close, index) => {
-        const x = padding + (index / (closes.length - 1)) * (width - padding * 2);
-        const y = padding + (1 - (close - min) / range) * (height - padding * 2);
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
-      }).join(' ');
-      const areaPoints = `${padding},${height - padding} ${points} ${width - padding},${height - padding}`;
-      const lastClose = closes[closes.length - 1];
-      const change = closes.length >= 2 ? ((closes[closes.length - 1] - closes[0]) / closes[0] * 100) : 0;
-      const changeClass = change >= 0 ? 'price-up' : 'price-down';
-      return `<section class="section"><h3>股价走势</h3><div class="price-chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="股价走势"><polygon points="${areaPoints}" class="price-area" /><polyline points="${points}" class="price-line" /></svg><div class="price-meta"><span>最新收盘：<strong>${lastClose}</strong></span><span class="${changeClass}">区间涨跌：${change.toFixed(2)}%</span><span>${bars.length} 个交易日</span></div></div></section>`;
+      return `<section class="section"><h3>股价走势</h3><div id="kline-chart" class="kline-chart"></div></section>`;
+    }
+
+    function renderKlineChart(bars) {
+      if (!Array.isArray(bars) || bars.length < 2) return;
+      const container = document.getElementById('kline-chart');
+      if (!container) return;
+      if (!globalThis.echarts) {
+        container.innerHTML = '<p class="empty-state">ECharts 未加载（CDN 不可用）。</p>';
+        return;
+      }
+      const dates = bars.map(bar => bar.date);
+      const candles = bars.map(bar => [bar.open, bar.close, bar.low, bar.high]);
+      const volumes = bars.map((bar, index) => ({
+        value: bar.volume,
+        itemStyle: { color: bar.close >= bar.open ? '#f05b4f' : '#31b985' },
+      }));
+      const chart = echarts.init(container);
+      chart.setOption({
+        animation: false,
+        axisPointer: { link: [{ xAxisIndex: 'all' }] },
+        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+        grid: [
+          { left: 62, right: 20, top: 20, height: '62%' },
+          { left: 62, right: 20, top: '76%', height: '18%' },
+        ],
+        xAxis: [
+          { type: 'category', gridIndex: 0, data: dates, boundaryGap: true,
+            axisLabel: { show: false }, splitLine: { show: false } },
+          { type: 'category', gridIndex: 1, data: dates, boundaryGap: true,
+            axisLabel: { show: true, fontSize: 10 } },
+        ],
+        yAxis: [
+          { type: 'value', gridIndex: 0, scale: true, position: 'right',
+            splitLine: { lineStyle: { color: 'rgba(139,151,166,0.12)', type: 'dashed' } } },
+          { type: 'value', gridIndex: 1, scale: true, position: 'right',
+            axisLabel: { formatter: value => value >= 100000000 ? (value/100000000).toFixed(1) + '亿' : (value/10000).toFixed(1) + '万' } },
+        ],
+        dataZoom: [
+          { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
+          { type: 'slider', xAxisIndex: [0, 1], start: 0, end: 100, bottom: 0, height: 18 },
+        ],
+        series: [
+          {
+            name: '日 K', type: 'candlestick', xAxisIndex: 0, yAxisIndex: 0,
+            data: candles,
+            itemStyle: {
+              color: '#f05b4f', color0: '#31b985',
+              borderColor: '#f05b4f', borderColor0: '#31b985',
+            },
+          },
+          {
+            name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
+            data: volumes, barWidth: '55%',
+          },
+        ],
+      });
+      container._echarts = chart;
     }
 
     function renderReport(task) {
@@ -831,6 +876,9 @@
         return `<section class="section"><h3>${escapeHtml(section.title || '')}</h3><div class="section-actions"><button data-prompt="追问：${escapeHtml(section.title || '')}">追问</button><button data-prompt="重新研究：${escapeHtml(section.title || '')}">重新研究本节</button></div><div class="section-content">${formatResearchContent(section.content, section.points || [])}${sectionCites ? `<div class="section-citations">${sectionCites}</div>` : ''}</div></section>`;
       }).join('');
       bindPromptButtons(ui.reportBody);
+      if (report.price_bars && report.price_bars.length) {
+        requestAnimationFrame(() => renderKlineChart(report.price_bars));
+      }
     }
     
     function renderEvidence(items) {
