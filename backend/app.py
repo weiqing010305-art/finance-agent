@@ -533,7 +533,7 @@ def create_app(
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     ) -> dict:
         if payload.agent != "financial":
-            raise HTTPException(status_code=409, detail="前端 MVP 目前只启用财报分析 Agent")
+            raise HTTPException(status_code=409, detail="前端 MVP 目前只启用公司分析 Agent")
         if mode == "deepseek" and not deepseek_key:
             raise HTTPException(
                 status_code=503,

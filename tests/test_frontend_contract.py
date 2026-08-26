@@ -196,17 +196,21 @@ def test_frontend_understands_all_six_durable_run_states() -> None:
     assert "正在校验检查点并恢复" in source
 
 
-def test_agent_picker_leads_the_composer_toolbar_instead_of_the_left_rail() -> None:
+def test_composer_is_unified_single_company_analysis_agent() -> None:
+    """The composer no longer exposes three agent choices; a single company
+    analysis agent handles prices, financials and filings together."""
     source = frontend_source()
     composer = source.split('<section class="composer"', 1)[1].split('</section>', 1)[0]
     rail = source.split('<aside class="rail"', 1)[1].split('</aside>', 1)[0]
 
-    assert 'id="agent-picker-toggle"' in composer
-    assert 'id="agent-picker-menu"' in composer
-    assert composer.index('id="agent-picker-toggle"') < composer.index('id="send"')
+    assert 'agent-picker-toggle' not in source
+    assert 'agent-picker-menu' not in source
+    assert '公司分析 Agent' in source
+    assert '财报分析 Agent' not in source
+    assert '市场分析 Agent' not in source
+    assert '公司研究 Agent' not in source
     assert 'id="context-company"' not in composer
-    assert 'aria-haspopup="listbox"' in composer
-    assert 'aria-label="Agent 选择"' not in rail
+    assert 'id="send"' in composer
 
 
 def test_composer_uses_a_compact_icon_send_action_without_company_chip() -> None:

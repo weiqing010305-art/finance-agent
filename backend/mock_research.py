@@ -26,7 +26,7 @@ MOCK_EVIDENCE = [
         "url": "https://www.hkexnews.hk/",
         "source_type": "一手来源",
         "excerpt": "利润改善与主要业务分部表现的核心披露。",
-        "agent": "财报分析 Agent",
+        "agent": "公司分析 Agent",
     },
     {
         "citation_number": 2,
@@ -35,7 +35,7 @@ MOCK_EVIDENCE = [
         "url": "https://www.tencent.com/",
         "source_type": "一手来源",
         "excerpt": "业务分部、毛利和费用结构变化说明。",
-        "agent": "财报分析 Agent",
+        "agent": "公司分析 Agent",
     },
     {
         "citation_number": 3,
@@ -44,7 +44,7 @@ MOCK_EVIDENCE = [
         "url": "https://www.tencent.com/",
         "source_type": "一手来源",
         "excerpt": "主要业务的收入贡献与经营表现说明。",
-        "agent": "财报分析 Agent",
+        "agent": "公司分析 Agent",
     },
 ]
 

@@ -195,20 +195,6 @@
     .composer-box textarea::placeholder{color:#78837e}
     .composer-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:10px}
     .composer-tools{display:flex;min-width:0;align-items:center;gap:8px}
-    .agent-picker{position:relative;flex:0 0 auto}
-    .agent-picker-toggle{display:inline-flex;min-height:38px;align-items:center;gap:8px;border:1px solid #b8ccc2;border-radius:999px;background:#f5faf7;padding:0 12px;color:var(--pine);font-size:12px;font-weight:700}
-    .agent-picker-toggle:hover,.agent-picker-toggle[aria-expanded="true"]{border-color:#7fa492;background:var(--pine-soft)}
-    .agent-picker-dot{width:8px;height:8px;border-radius:50%;background:var(--pine);box-shadow:0 0 0 3px rgba(20,90,70,.12)}
-    .agent-picker-chevron{width:14px;height:14px;transition:transform .18s ease-out}
-    .agent-picker-toggle[aria-expanded="true"] .agent-picker-chevron{transform:rotate(180deg)}
-    .agent-picker-menu{position:absolute;z-index:60;left:0;bottom:calc(100% + 10px);width:280px;padding:6px;border:1px solid var(--line-strong);border-radius:14px;background:var(--white);box-shadow:0 16px 36px rgba(23,32,29,.14)}
-    .agent-picker-menu[hidden]{display:none}
-    .agent-option{position:relative;display:block;width:100%;min-height:58px;border:0;border-radius:10px;background:transparent;padding:9px 42px 9px 12px;color:var(--text);text-align:left}
-    .agent-option:hover:not(:disabled){background:#edf4f0}
-    .agent-option strong{display:block;font-size:13px;line-height:1.35}
-    .agent-option small{display:block;margin-top:4px;color:var(--muted);font-size:11px;line-height:1.35}
-    .agent-option-state{position:absolute;right:12px;top:11px;color:var(--pine);font-size:10px;font-weight:750}
-    .agent-option:disabled{cursor:not-allowed;opacity:.52}
     .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
     .send{display:grid;width:42px;min-width:42px;height:42px;place-items:center;border:0;border-radius:50%;background:var(--pine);color:#fff;font-size:0;box-shadow:0 6px 14px rgba(20,90,70,.18)}
     .send-icon{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
@@ -269,7 +255,6 @@
       .metric:last-child{border-bottom:0}
       .composer{position:fixed;z-index:40;left:0;right:0;bottom:0;padding:8px 10px 10px}
       .composer-box textarea{min-height:40px}
-      .agent-picker-menu{position:fixed;right:10px;bottom:142px;left:10px;width:auto}
       .evidence{width:100vw;height:100dvh;border-left:0}
     }
     .confirm-modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(23,32,29,.42);font-family:var(--font)}
@@ -311,10 +296,10 @@
 
       <div class="document-scroll" id="document-scroll">
         <section class="research-turn" id="research-turn" aria-label="当前研究对话" hidden>
-          <div class="user-message"><div class="user-bubble"><p id="research-question">腾讯近三年利润增长由哪些业务驱动？这种增长是否可持续？</p><small id="task-meta-line">财报分析 Agent · 标准深度 · 等待后端</small></div></div>
+          <div class="user-message"><div class="user-bubble"><p id="research-question">腾讯近三年利润增长由哪些业务驱动？这种增长是否可持续？</p><small id="task-meta-line">公司分析 Agent · 标准深度 · 等待后端</small></div></div>
         </section>
         <header class="case-head">
-          <div class="kicker"><b id="report-kicker">新公司案卷</b><span>财报分析 Agent · 七部分候选结构</span><span>·</span><span id="report-provider">DeepSeek 联网研究</span></div>
+          <div class="kicker"><b id="report-kicker">新公司案卷</b><span>公司分析 Agent · 综合研究</span><span>·</span><span id="report-provider">DeepSeek 联网研究</span></div>
           <h1 id="report-title">从一家你关心的公司开始</h1>
           <p id="report-description">直接提出公司研究问题，Agent 会自动识别公司、股票代码和市场，并生成带数字引用的调查结果。</p>
         </header>
@@ -339,18 +324,7 @@
           <textarea id="composer-input" rows="2" aria-label="研究问题或继续追问" placeholder="直接输入研究问题，例如：腾讯近三年利润增长是否可持续？"></textarea>
           <div class="composer-foot">
             <div class="composer-tools">
-              <div class="agent-picker">
-                <button class="agent-picker-toggle" id="agent-picker-toggle" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="agent-picker-menu">
-                  <span class="agent-picker-dot" aria-hidden="true"></span><span>财报分析 Agent</span>
-                  <svg class="agent-picker-chevron" aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                </button>
-                <div class="agent-picker-menu" id="agent-picker-menu" role="listbox" aria-label="选择研究 Agent" hidden>
-                  <button class="agent-option" type="button" role="option" aria-selected="true" data-agent="financial"><strong>财报分析 Agent</strong><small>财报、公告与经营质量</small><span class="agent-option-state">当前</span></button>
-                  <button class="agent-option" type="button" role="option" aria-selected="false" disabled><strong>市场分析 Agent</strong><small>行情、指标与风险数据</small><span class="agent-option-state">开发中</span></button>
-                  <button class="agent-option" type="button" role="option" aria-selected="false" disabled><strong>公司研究 Agent</strong><small>编排专业 Agent 生成案卷</small><span class="agent-option-state">后续</span></button>
-                </div>
-              </div>
-              <span class="sr-only" id="composer-hint">Agent 会自动识别公司、股票代码和市场 · Enter 发送</span>
+              <span class="sr-only" id="composer-hint">公司分析 Agent 会自动识别公司、股票代码和市场 · Enter 发送</span>
             </div>
             <button class="send" id="send" type="button" aria-label="发送"><svg class="send-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 20V4m0 0-6.5 6.5M12 4l6.5 6.5"/></svg><span class="sr-only">发送</span></button>
           </div>
@@ -405,8 +379,6 @@
       reportDescription: document.getElementById('report-description'),
       send: document.getElementById('send'),
       composerHint: document.getElementById('composer-hint'),
-      agentPickerToggle: document.getElementById('agent-picker-toggle'),
-      agentPickerMenu: document.getElementById('agent-picker-menu'),
       traceSection: document.getElementById('agent-trace'),
       traceToggle: document.getElementById('agent-trace-toggle'),
       traceList: document.getElementById('agent-trace-list'),
@@ -516,11 +488,6 @@
       ui.traceList.hidden = !expanded;
     }
 
-    function setAgentPickerExpanded(expanded) {
-      ui.agentPickerToggle.setAttribute('aria-expanded', String(expanded));
-      ui.agentPickerMenu.hidden = !expanded;
-    }
-
     function setTraceState(message, tone = 'running') {
       if (message === '等待任务') {
         stopTraceClock();
@@ -562,7 +529,7 @@
       ui.companyTicker.textContent = 'Agent 将自动识别研究对象';
       ui.researchTurn.hidden = true;
       document.getElementById('research-question').textContent = '直接输入一个公司研究问题';
-      ui.meta.textContent = '财报分析 Agent · 等待启动';
+      ui.meta.textContent = '公司分析 Agent · 等待启动';
       ui.reportKicker.textContent = '新公司案卷';
       ui.reportProvider.textContent = providerLabel();
       ui.reportTitle.textContent = '从一家你关心的公司开始';
@@ -918,7 +885,7 @@
       ui.researchTurn.hidden = false;
       document.getElementById('research-question').textContent = task.question;
       const depthLabel = { quick: '快速', standard: '标准', deep: '深入' }[task.depth] || task.depth;
-      ui.meta.textContent = `财报分析 Agent · ${depthLabel}深度 · ${task.progress}%`;
+      ui.meta.textContent = `公司分析 Agent · ${depthLabel}深度 · ${task.progress}%`;
       setComposerAction(task.status);
       const labels = {
         running: `研究进行中 · ${task.progress}%`, pause_requested: '正在安全暂停 · 当前步骤完成后暂停', paused: '研究已暂停 · 当前结果已保留', resuming: '正在校验检查点并恢复',
@@ -1272,7 +1239,7 @@
       runtime.finishedAt = null;
       ui.researchTurn.hidden = false;
       document.getElementById('research-question').textContent = input.question.trim();
-      ui.meta.textContent = '财报分析 Agent · 正在启动';
+      ui.meta.textContent = '公司分析 Agent · 正在启动';
       setTraceExpanded(true);
       setTraceState('正在创建');
       ui.newCase.disabled = true;
@@ -1337,7 +1304,7 @@
         await loadCases();
       } catch {
         setStatus('后端未启动 · 当前为静态界面', 'offline');
-        ui.meta.textContent = '财报分析 Agent · 后端未连接';
+        ui.meta.textContent = '公司分析 Agent · 后端未连接';
         ui.send.disabled = true;
       }
     }
@@ -1464,15 +1431,7 @@
     ui.traceToggle.addEventListener('click', () => {
       setTraceExpanded(ui.traceToggle.getAttribute('aria-expanded') !== 'true');
     });
-    ui.agentPickerToggle.addEventListener('click', () => {
-      setAgentPickerExpanded(ui.agentPickerToggle.getAttribute('aria-expanded') !== 'true');
-    });
-    ui.agentPickerMenu.querySelector('[data-agent="financial"]').addEventListener('click', () => {
-      setAgentPickerExpanded(false);
-      ui.input.focus();
-    });
     document.addEventListener('click', event => {
-      if (!event.target.closest('.agent-picker')) setAgentPickerExpanded(false);
       if (!event.target.closest('.case-item')) closeAllCaseMenus();
     });
     document.addEventListener('keydown', event => {
@@ -1481,10 +1440,6 @@
         setSearchResultsOpen(false);
         ui.searchResultsToggle.focus();
         return;
-      }
-      if (event.key === 'Escape' && ui.agentPickerToggle.getAttribute('aria-expanded') === 'true') {
-        setAgentPickerExpanded(false);
-        ui.agentPickerToggle.focus();
       }
     });
 

@@ -210,7 +210,7 @@ async def run_deepseek_research(
                         "url": url,
                         "source_type": "网页来源",
                         "excerpt": "研究过程中已访问该来源；即使报告整理失败，也可打开原文继续核对。",
-                        "agent": "财报分析 Agent",
+                        "agent": "公司分析 Agent",
                     }
                     repository.replace_evidence(
                         task_id,

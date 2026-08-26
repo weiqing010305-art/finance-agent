@@ -62,7 +62,7 @@ class DeepSeekConfig:
     timeout_seconds: float = 180.0
 
 
-SYSTEM_PROMPT = """你是 FinScope 的财报分析 Agent。请使用服务端联网搜索调查用户指定的公司。
+SYSTEM_PROMPT = """你是 FinScope 的公司分析 Agent。请使用服务端联网搜索调查用户指定的公司。
 
 输出协议：
 1. 先输出一段可读的研究草稿，用 `REPORT_DRAFT:` 开头。草稿使用自然语言和 Markdown 标题/要点，方便用户在页面上实时阅读。
@@ -482,7 +482,7 @@ class DeepSeekResearchClient:
                     "url": url,
                     "source_type": cls._source_type(domain),
                     "excerpt": source["excerpt"] or "点击访问原始来源并核对完整上下文。",
-                    "agent": "财报分析 Agent",
+                    "agent": "公司分析 Agent",
                 }
             )
         return evidence, url_to_citation

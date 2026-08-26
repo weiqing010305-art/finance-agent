@@ -57,7 +57,7 @@ def test_only_financial_agent_is_enabled(tmp_path):
             },
         )
         assert response.status_code == 409
-        assert "财报分析 Agent" in response.json()["detail"]
+        assert "公司分析 Agent" in response.json()["detail"]
 
 
 def test_file_frontend_origin_can_reach_api(tmp_path):
