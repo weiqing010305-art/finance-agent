@@ -22,3 +22,6 @@ cryptography==49.0.0
 
 # Optional: HK / US financial statements via Tushare Pro (set TUSHARE_TOKEN)
 tushare==1.4.29
+
+# AkShare-backed daily price source (A/H/US, free, no token)
+akshare>=1.17,<2

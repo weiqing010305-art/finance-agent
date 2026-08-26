@@ -120,6 +120,13 @@ def build_formal_research_router(
                             "max_attempts": 1, "estimated_cost": 1,
                         },
                         {
+                            "id": "fetch_prices", "kind": "tool",
+                            "tool_name": "fetch_stock_prices", "dependencies": [],
+                            "input": {"symbol": payload.symbol, "market": payload.market, "periods": 30},
+                            "success_criteria": ["fetch recent daily price bars or degrade to quote"],
+                            "max_attempts": 1, "estimated_cost": 1,
+                        },
+                        {
                             "id": "fetch_statements", "kind": "tool",
                             "tool_name": "fetch_financial_statements", "dependencies": [],
                             "input": {"symbol": payload.symbol, "market": payload.market, "periods": 4},

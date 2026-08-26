@@ -446,6 +446,11 @@ class ControlledToolsResearchProcessor:
             value = item.get("value"); unit = item.get("unit") or ""
             period = item.get("period") or ""
             text = f"{name} = {value}{unit} ({period})".strip()
+        elif step_id == "fetch_prices":
+            name = item.get("name") or "股价"
+            value = item.get("value"); unit = item.get("unit") or ""
+            period = item.get("period") or ""
+            text = f"{name} = {value}{unit} ({period})".strip()
         elif step_id in {"search_filings", "retrieve_documents"}:
             title = item.get("title") or "源材料"
             text = f"参考：{title}"

@@ -1,16 +1,22 @@
 """Tushare Pro financial-statements source for HK / US symbols.
 
-The controlled-tools pipeline now has a HK / US data path on top of the
-public Tushare Pro API. The project owns the integration but **does not**
-ship a token; users must set ``TUSHARE_TOKEN`` in their environment (or
-the project ``backend/.env``) to enable it. Without a token the source
-returns ``None`` from :py:meth:`from_env`, and ``fetch_financial_statements``
-degrades to the existing search-filings fallback path (no fabricated
-numbers).
+The controlled-tools pipeline now has a real HK / US data path on top of
+the public Tushare Pro REST API. The project owns the integration but
+**does not** ship a token; users must set ``TUSHARE_TOKEN`` in their
+environment (or the project ``backend/.env``) to enable it. Without a
+token the source returns ``None`` from :py:meth:`from_env`, and
+``fetch_financial_statements`` degrades to the existing search_filings
+fallback path (no fabricated numbers).
 
-Reference: https://tushare.pro/document/2 — HK and US endpoints require
-``pro`` tier or above; the free tier shares the same interfaces with a
-shared daily quota (~200 calls / day).
+We deliberately do **not** depend on the ``tushare`` Python package: as of
+1.4.29 it ships a hard-coded legacy endpoint (``api.waditu.com``) that has
+been decommissioned for years, so any ``pro.stock_hk_income(...)`` call
+fails with "请指定正确的接口名". Calling the real ``https://api.tushare.pro``
+endpoint over ``httpx`` works around the stale client.
+
+Reference: https://tushare.pro/document/2 — HK endpoints (``stock_hk_*``)
+and US endpoints (``us_*``) require ``pro`` tier or above; the free tier
+shares the same interfaces with a shared daily quota (~200 calls / day).
 """
 
 from __future__ import annotations
@@ -19,9 +25,13 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from backend.redaction import redact_text
 
+TUSHARE_PRO_URL = "https://api.tushare.pro"
 TUSHARE_ENV_TOKEN = "TUSHARE_TOKEN"
+TUSHARE_TIMEOUT = 15.0
 
 
 class TushareFinancialStatementsError(RuntimeError):
@@ -29,20 +39,16 @@ class TushareFinancialStatementsError(RuntimeError):
 
 
 # Tushare column -> (Chinese label, canonical key, unit, scale)
-# HK (港股) — stock_hk_income / balance / cashflow / indicator
 HK_INCOME_FIELDS: dict[str, tuple[str, str, str, float]] = {
     "TOTAL_REVENUE": ("营业总收入", "revenue", "CNY", 1.0),
     "REVENUE": ("营业收入", "operating_revenue", "CNY", 1.0),
     "OPERATE_PROFIT": ("营业利润", "operating_profit", "CNY", 1.0),
-    "NONOPERATE_PROFIT": ("营业外利润", "non_operating_profit", "CNY", 1.0),
     "TOTAL_PROFIT": ("利润总额", "total_profit", "CNY", 1.0),
     "INCOME_TAX": ("所得税", "income_tax", "CNY", 1.0),
     "NETPROFIT": ("净利润", "net_profit", "CNY", 1.0),
     "PARENT_NETPROFIT": ("归属母公司净利润", "net_profit", "CNY", 1.0),
-    "MINORITY_INTEREST": ("少数股东损益", "minority_interest", "CNY", 1.0),
     "BASIC_EPS": ("基本每股收益", "eps_basic", "CNY", 1.0),
     "DEDUCTED_BASIC_EPS": ("扣非每股收益", "eps_deducted", "CNY", 1.0),
-    "DEDUCTED_BASIC_EPS_YOY": ("扣非每股收益同比", "eps_deducted_yoy_pct", "%", 1.0),
 }
 
 HK_BALANCE_FIELDS: dict[str, tuple[str, str, str, float]] = {
@@ -59,8 +65,6 @@ HK_CASHFLOW_FIELDS: dict[str, tuple[str, str, str, float]] = {
     "NETCASH_FINANCE": ("筹资活动现金流净额", "financing_cash_flow", "CNY", 1.0),
 }
 
-# Tushare Pro US income / balance / cashflow use slightly different
-# column names (USD currency, no minority_interest variant, etc.).
 US_INCOME_FIELDS: dict[str, tuple[str, str, str, float]] = {
     "TOTAL_REVENUE": ("Total Revenue", "revenue", "USD", 1.0),
     "OPERATE_INCOME": ("Operating Income", "operating_profit", "USD", 1.0),
@@ -86,7 +90,6 @@ US_CASHFLOW_FIELDS: dict[str, tuple[str, str, str, float]] = {
 }
 
 
-# Map a (market, statement_kind) pair to the Tushare column map.
 FIELD_MAPS: dict[tuple[str, str], dict[str, tuple[str, str, str, float]]] = {
     ("HK", "income"): HK_INCOME_FIELDS,
     ("HK", "balance"): HK_BALANCE_FIELDS,
@@ -95,6 +98,18 @@ FIELD_MAPS: dict[tuple[str, str], dict[str, tuple[str, str, str, float]]] = {
     ("US", "balance"): US_BALANCE_FIELDS,
     ("US", "cashflow"): US_CASHFLOW_FIELDS,
 }
+
+# Map a (market, statement_kind) to the Tushare Pro api_name.
+API_NAMES: dict[tuple[str, str], str] = {
+    ("HK", "income"): "stock_hk_income",
+    ("HK", "balance"): "stock_hk_balance",
+    ("HK", "cashflow"): "stock_hk_cashflow",
+    ("US", "income"): "us_income",
+    ("US", "balance"): "us_balance",
+    ("US", "cashflow"): "us_cashflow",
+}
+
+DEFAULT_CURRENCY: dict[str, str] = {"HK": "CNY", "US": "USD"}
 
 
 def _to_number(value: Any) -> float | None:
@@ -117,7 +132,6 @@ def _parse_period(end_date: Any) -> str | None:
     raw = str(end_date).strip()
     if not raw:
         return None
-    # Tushare returns ISO-like strings: "20240331" or "2024-03-31".
     raw = raw.replace("-", "")
     if len(raw) == 8 and raw.isdigit():
         return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
@@ -125,25 +139,24 @@ def _parse_period(end_date: Any) -> str | None:
 
 
 class TushareFinancialStatements:
-    """Async-friendly wrapper around Tushare Pro for HK / US financial data.
-
-    Tushare's HTTP client is synchronous; the ``async`` interface here lets
-    the tool handler stay uniform with the rest of the tool registry.
-    """
+    """Async-friendly wrapper around Tushare Pro for HK / US data."""
 
     def __init__(
         self,
         token: str,
         *,
         market: str = "HK",
-        timeout: float = 15.0,
+        base_url: str = TUSHARE_PRO_URL,
+        timeout: float = TUSHARE_TIMEOUT,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         if not token:
             raise TushareFinancialStatementsError("Tushare token is empty")
         self.token = token
         self.market = market.upper()
+        self.base_url = base_url
         self.timeout = timeout
-        self._pro = None
+        self._client = client
 
     @classmethod
     def from_env(
@@ -151,20 +164,63 @@ class TushareFinancialStatements:
         env: dict[str, str] | None = None,
         *,
         market: str = "HK",
-        timeout: float = 15.0,
+        base_url: str = TUSHARE_PRO_URL,
+        timeout: float = TUSHARE_TIMEOUT,
+        client: httpx.AsyncClient | None = None,
     ) -> "TushareFinancialStatements | None":
         values = os.environ if env is None else env
         token = (values.get(TUSHARE_ENV_TOKEN) or "").strip()
         if not token:
             return None
-        return cls(token=token, market=market, timeout=timeout)
+        return cls(
+            token=token, market=market, base_url=base_url,
+            timeout=timeout, client=client,
+        )
 
-    def _client(self):
-        if self._pro is None:
-            import tushare as ts
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self._client
 
-            self._pro = ts.pro_api(self.token, timeout=self.timeout)
-        return self._pro
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def _post(self, api_name: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        import asyncio
+
+        client = self._get_client()
+        body = {
+            "api_name": api_name,
+            "token": self.token,
+            "params": {**params, "limit": max(1, int(params.get("limit", 4)))},
+            "fields": "",
+        }
+        try:
+            response = await client.post(self.base_url, json=body)
+        except httpx.HTTPError as exc:
+            raise TushareFinancialStatementsError(
+                f"Tushare HTTP request failed: {exc}"
+            ) from exc
+        if response.status_code != 200:
+            raise TushareFinancialStatementsError(
+                f"Tushare returned HTTP {response.status_code}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise TushareFinancialStatementsError(
+                f"Tushare returned non-JSON body: {exc}"
+            ) from exc
+        if payload.get("code") != 0:
+            raise TushareFinancialStatementsError(
+                f"Tushare error: {payload.get('msg') or 'unknown'}"
+            )
+        data = payload.get("data") or {}
+        fields = data.get("fields") or []
+        items = data.get("items") or []
+        return [dict(zip(fields, item)) for item in items]
 
     async def fetch(
         self,
@@ -172,53 +228,61 @@ class TushareFinancialStatements:
         *,
         periods: int = 4,
     ) -> list[dict[str, Any]]:
-        """Fetch the most recent ``periods`` quarters of HK / US data.
-
-        ``ts_code`` must be the Tushare symbol (e.g. ``"00700.HK"`` or
-        ``"AAPL.US"``). Returns a list of ``StatementRow``-compatible dicts
-        with the same shape used by :mod:`backend.financial_statements` so
-        downstream ``calculate_financial_metrics`` does not care about the
-        source.
-        """
-        import asyncio
-
-        pro = self._client()
-        field_map = FIELD_MAPS.get((self.market, "income"))
-        if field_map is None:
+        """Fetch the most recent ``periods`` rows of HK / US income / balance /
+        cashflow statements. Each returned dict matches the StatementRow
+        shape used by the Eastmoney adapter so the downstream controlled-
+        tools processor treats both sources identically."""
+        market = self.market
+        if (market, "income") not in API_NAMES:
             raise TushareFinancialStatementsError(
-                f"unsupported market for Tushare adapter: {self.market}"
+                f"unsupported market for Tushare adapter: {market}"
             )
-
-        # Pull the most recent N rows from each statement. Tushare's Pro API
-        # is synchronous; offload to a worker thread so the async handler
-        # stays cooperative.
-        income_rows = await asyncio.to_thread(self._list, pro.stock_hk_income if self.market == "HK" else pro.us_income, ts_code, periods)
-        balance_rows = await asyncio.to_thread(self._list, pro.stock_hk_balance if self.market == "HK" else pro.us_balance, ts_code, periods)
-        cashflow_rows = await asyncio.to_thread(self._list, pro.stock_hk_cashflow if self.market == "HK" else pro.us_cashflow, ts_code, periods)
-
+        import asyncio
+        params = {"ts_code": ts_code, "limit": max(1, int(periods))}
+        income_rows, balance_rows, cashflow_rows = await asyncio.gather(
+            self._post(API_NAMES[(market, "income")], params),
+            self._post(API_NAMES[(market, "balance")], params),
+            self._post(API_NAMES[(market, "cashflow")], params),
+        )
         return self._merge_rows(income_rows, balance_rows, cashflow_rows)
 
-    # ----- helpers ------------------------------------------------------
+    def _sync_fetch(self, api_name: str, ts_code: str, periods: int) -> list[dict[str, Any]]:
+        # Run in a worker thread (no event loop available). We need a
+        # synchronous HTTP client for that thread.
+        with httpx.Client(timeout=self.timeout) as sync_client:
+            return self._sync_post(sync_client, api_name, {"ts_code": ts_code, "limit": periods})
 
-    @staticmethod
-    def _list(api_method, ts_code: str, periods: int) -> list[dict[str, Any]]:
+    def _sync_post(self, client: httpx.Client, api_name: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        body = {
+            "api_name": api_name,
+            "token": self.token,
+            "params": {**params, "limit": max(1, int(params.get("limit", 4)))},
+            "fields": "",
+        }
         try:
-            df = api_method(ts_code=ts_code, limit=periods)
-        except Exception as exc:
-            try:
-                name = api_method.__name__
-            except AttributeError:
-                try:
-                    name = api_method.func.__name__  # type: ignore[attr-defined]
-                except AttributeError:
-                    name = type(api_method).__name__
+            response = client.post(self.base_url, json=body)
+        except httpx.HTTPError as exc:
             raise TushareFinancialStatementsError(
-                f"Tushare {name} failed: {type(exc).__name__}: {exc}"
+                f"Tushare HTTP request failed: {exc}"
             ) from exc
-        if df is None or len(df) == 0:
-            return []
-        # Tushare returns a DataFrame; normalise to records.
-        return df.to_dict(orient="records")
+        if response.status_code != 200:
+            raise TushareFinancialStatementsError(
+                f"Tushare returned HTTP {response.status_code}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise TushareFinancialStatementsError(
+                f"Tushare returned non-JSON body: {exc}"
+            ) from exc
+        if payload.get("code") != 0:
+            raise TushareFinancialStatementsError(
+                f"Tushare error: {payload.get('msg') or 'unknown'}"
+            )
+        data = payload.get("data") or {}
+        fields = data.get("fields") or []
+        items = data.get("items") or []
+        return [dict(zip(fields, item)) for item in items]
 
     def _merge_rows(
         self,
@@ -234,7 +298,6 @@ class TushareFinancialStatements:
             period = _parse_period(row.get("END_DATE") or row.get("end_date"))
             return period or ""
 
-        # Group rows by period (newest first) — Tushare returns descending.
         grouped: dict[str, dict[str, Any]] = {}
         for row in income_rows:
             period = _key(row)
@@ -249,16 +312,18 @@ class TushareFinancialStatements:
             entry = grouped.setdefault(period, {"period": period})
             self._fill_metrics(entry, row, cashflow_map)
 
-        # Sort newest first by ISO period.
-        ordered = sorted(
+        return sorted(
             (self._row_to_statement(period, metrics) for period, metrics in grouped.items() if period),
             key=lambda r: r["period"],
             reverse=True,
         )
-        return ordered
 
     @staticmethod
-    def _fill_metrics(entry: dict[str, Any], row: dict[str, Any], field_map: dict[str, tuple[str, str, str, float]]) -> None:
+    def _fill_metrics(
+        entry: dict[str, Any],
+        row: dict[str, Any],
+        field_map: dict[str, tuple[str, str, str, float]],
+    ) -> None:
         for upstream, (label, key, unit, scale) in field_map.items():
             value = _to_number(row.get(upstream) or row.get(upstream.lower()))
             if value is None:
@@ -299,8 +364,9 @@ async def fetch_via_tushare(
 ) -> dict[str, Any]:
     """Tool handler: fetch HK / US financial metrics from Tushare Pro.
 
-    Returns the same shape as :func:`backend.financial_statements.fetch_financial_statements`
-    so the controlled-tools processor treats it identically.
+    Returns the same shape as
+    :func:`backend.financial_statements.fetch_financial_statements` so the
+    controlled-tools processor treats it identically.
     """
     market = (getattr(payload, "market", "") or "").strip().upper()
     symbol = (getattr(payload, "symbol", "") or "").strip().upper()
@@ -316,7 +382,7 @@ async def fetch_via_tushare(
     ts_code = _to_tushare_symbol(symbol, market)
     if not ts_code:
         raise TushareFinancialStatementsError(
-            f"cannot map {symbol}.{market} to a Tushare ts_code (no suffix supported)"
+            f"cannot map {symbol}.{market} to a Tushare ts_code"
         )
 
     client = _client or TushareFinancialStatements.from_env(market=market)
@@ -330,7 +396,11 @@ async def fetch_via_tushare(
             ),
             "fallback_used": "filings_search",
         }
-    rows = await client.fetch(ts_code, periods=periods)
+    try:
+        rows = await client.fetch(ts_code, periods=periods)
+    finally:
+        if _client is None:
+            await client.aclose()
     if not rows:
         return {
             "status": "empty", "data": [], "evidence": [],
@@ -346,7 +416,7 @@ async def fetch_via_tushare(
         "data": rows,
         "evidence": [],
         "coverage": "hk" if market == "HK" else "us",
-        "source_url": f"https://tushare.pro/document/2 (token: configured)",
+        "source_url": f"https://api.tushare.pro (token: configured)",
         "degraded": False,
         "degraded_reason": None,
         "fallback_used": None,

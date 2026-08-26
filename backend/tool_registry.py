@@ -178,6 +178,40 @@ class FinancialStatementsResult(ToolResult):
     source_url: str | None = None
 
 
+class FetchStockPricesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(min_length=1, max_length=32)
+    market: str = Field(default="", max_length=16)
+    periods: int = Field(default=30, ge=1, le=250)
+
+
+class PriceBar(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    date: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class StockQuoteSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    latest_close: float
+    latest_date: str
+    change: float | None = None
+    change_pct: float | None = None
+    window_high: float | None = None
+    window_low: float | None = None
+    bars: int = 0
+
+
+class StockPricesResult(ToolResult):
+    data: list[PriceBar] = Field(default_factory=list)
+    quote: StockQuoteSummary | None = None
+    coverage: Literal["akshare", "unsupported"] = "akshare"
+
+
 class DocumentSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str
@@ -461,6 +495,16 @@ def build_default_registry(
             output_model=FinancialStatementsResult,
         ),
         fetch_financial_statements,
+    )
+    from backend.akshare_source import fetch_stock_prices
+    registry.register(
+        ToolSpec(
+            name="fetch_stock_prices", version="1", risk_level="low",
+            timeout_seconds=30, max_retries=2, idempotent=True, cost_class=1,
+            requires_confirmation=False, input_model=FetchStockPricesInput,
+            output_model=StockPricesResult,
+        ),
+        fetch_stock_prices,
     )
     registry.register(
         ToolSpec(
