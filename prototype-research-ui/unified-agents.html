@@ -150,6 +150,14 @@
     .section h3{margin:30px 0 10px;font-size:19px;line-height:1.35;letter-spacing:-.015em}
     .section-content{max-width:68ch;color:var(--text);font-size:15px;line-height:1.82}
     .section-content p{margin:0 0 14px;text-wrap:pretty}
+    .price-chart{margin:10px 0 18px}
+    .price-chart svg{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.7)}
+    .price-chart .price-area{fill:rgba(20,90,70,.10)}
+    .price-chart .price-line{fill:none;stroke:var(--pine);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+    .price-meta{display:flex;gap:18px;align-items:center;padding-top:8px;color:var(--muted);font-size:12px}
+    .price-meta strong{color:var(--ink);font-weight:600}
+    .price-up{color:var(--pine);font-weight:600}
+    .price-down{color:var(--red);font-weight:600}
     .metrics-table{width:100%;border-collapse:collapse;margin:10px 0 18px;font-size:13px}
     .metrics-table th,.metrics-table td{border:1px solid var(--line);padding:8px 10px;text-align:left}
     .metrics-table th{background:var(--paper);color:var(--ink);font-weight:600}
@@ -782,6 +790,25 @@
       return `<section class="section"><h3>财务指标摘要</h3><div class="table-wrap"><table class="metrics-table"><thead><tr><th>指标</th><th>数值</th><th>报告期</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
     }
 
+    function priceBarsMarkup(bars) {
+      if (!Array.isArray(bars) || bars.length < 2) return '';
+      const closes = bars.map(bar => Number(bar.close) || 0).filter(value => value > 0);
+      if (closes.length < 2) return '';
+      const width = 640, height = 180, padding = 10;
+      const min = Math.min(...closes), max = Math.max(...closes);
+      const range = max - min || 1;
+      const points = closes.map((close, index) => {
+        const x = padding + (index / (closes.length - 1)) * (width - padding * 2);
+        const y = padding + (1 - (close - min) / range) * (height - padding * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      const areaPoints = `${padding},${height - padding} ${points} ${width - padding},${height - padding}`;
+      const lastClose = closes[closes.length - 1];
+      const change = closes.length >= 2 ? ((closes[closes.length - 1] - closes[0]) / closes[0] * 100) : 0;
+      const changeClass = change >= 0 ? 'price-up' : 'price-down';
+      return `<section class="section"><h3>股价走势</h3><div class="price-chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="股价走势"><polygon points="${areaPoints}" class="price-area" /><polyline points="${points}" class="price-line" /></svg><div class="price-meta"><span>最新收盘：<strong>${lastClose}</strong></span><span class="${changeClass}">区间涨跌：${change.toFixed(2)}%</span><span>${bars.length} 个交易日</span></div></div></section>`;
+    }
+
     function renderReport(task) {
       const report = task.report || task.result;
       if (!report) return;
@@ -799,7 +826,7 @@
       const summary = report.summary || '本次研究在受控工具链中执行；巨潮/腾讯/检索任一环节失败时已显式降级。';
       ui.reportSummary.innerHTML = `<strong>核心结论：</strong>${escapeHtml(summary)} ${summaryCitations}`;
       const sections = Array.isArray(report.sections) ? report.sections : [];
-      ui.reportBody.innerHTML = financialMetricsMarkup(report.financial_metrics) + sections.map(section => {
+      ui.reportBody.innerHTML = priceBarsMarkup(report.price_bars) + financialMetricsMarkup(report.financial_metrics) + sections.map(section => {
         const sectionCites = (section.citations || []).map(number => citationMarkup(number, evidenceMap)).join('');
         return `<section class="section"><h3>${escapeHtml(section.title || '')}</h3><div class="section-actions"><button data-prompt="追问：${escapeHtml(section.title || '')}">追问</button><button data-prompt="重新研究：${escapeHtml(section.title || '')}">重新研究本节</button></div><div class="section-content">${formatResearchContent(section.content, section.points || [])}${sectionCites ? `<div class="section-citations">${sectionCites}</div>` : ''}</div></section>`;
       }).join('');

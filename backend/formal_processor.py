@@ -333,6 +333,23 @@ class ControlledToolsResearchProcessor:
             "completed_step_ids": sorted(completed),
         }
 
+    def _collect_price_bars(self, run_id: str) -> list[dict]:
+        """Return the most recent price bars from the fetch_prices step."""
+        for step in self.steps:
+            if step.get("id") != "fetch_prices":
+                continue
+            output = self._step_output(run_id, "fetch_prices")
+            if not output:
+                return []
+            data = output.get("data")
+            if isinstance(data, list):
+                return [
+                    {"date": str(bar.get("date") or ""), "close": float(bar.get("close") or 0)}
+                    for bar in data
+                    if isinstance(bar, dict) and bar.get("close") is not None
+                ]
+        return []
+
     def _collect_evidence_and_claims(self, run_id, plan_version, steps_by_id):
         """Walk succeeded run_steps and collect (evidence, claim) tuples for the
         verified report. Each non-synthesis step's output becomes a piece of
@@ -564,6 +581,8 @@ class ControlledToolsResearchProcessor:
             for e in evidence
             if e.get("step_id") == "fetch_statements" and e.get("value") is not None
         ]
+        # Preserve the AkShare price bars for the frontend sparkline.
+        price_bars = self._collect_price_bars(run_id)
 
         company = run.get("company") or "研究对象"
         question = plan.get("goal") or "公司研究"
@@ -630,16 +649,18 @@ class ControlledToolsResearchProcessor:
             # keep its summary / sections / provider / limitations.
             report_payload = report_json
             report_payload["financial_metrics"] = financial_metrics
+            report_payload["price_bars"] = price_bars
         else:
             report_payload = {
                 "complete": True, "synthetic": False,
                 "execution_profile": self.execution_profile,
-                "title": f"{company} 财报研究",
+                "title": f"{company} 公司分析报告",
                 "summary": self._render_summary(verified, evidence),
-                "sections": self._render_sections(verified, evidence, citations),
+                "sections": self._render_structured_report(run, verified, evidence, citations),
                 "provider": "controlled_tools",
                 "tool_count": len(evidence),
                 "financial_metrics": financial_metrics,
+                "price_bars": price_bars,
                 "limitations": [
                     "non-official public APIs (cninfo / tencent) with explicit degradation",
                     "deterministic tools only, no LLM synthesis",
@@ -800,6 +821,132 @@ class ControlledToolsResearchProcessor:
             ],
         }
         return markdown, report_json, citations
+
+    def _render_structured_report(self, run, verified, evidence, citations):
+        """Build the user-facing company-analysis report: 公司概览 / 股价表现 /
+        财务摘要 / 财务分析 / 证据与来源. Each point is a verified claim and
+        keeps its citation trail."""
+        evidence_by_id = {e.get("id"): e for e in evidence}
+        claim_by_id = {v.id: v for v in verified}
+        citations_by_evidence: dict[str, list[dict]] = {}
+        for c in citations:
+            citations_by_evidence.setdefault(str(c["evidence_id"]), []).append(c)
+
+        def _points_for(step_id: str, include=None, exclude=None, limit=None):
+            points = []
+            for v in verified:
+                for eid in v.evidence_ids:
+                    ev = evidence_by_id.get(str(eid))
+                    if not ev:
+                        continue
+                    if ev.get("step_id") != step_id:
+                        continue
+                    text = v.text
+                    name = text.split("=")[0].strip() if "=" in text else text
+                    if include and not any(k in name for k in include):
+                        continue
+                    if exclude and any(k in name for k in exclude):
+                        continue
+                    points.append({"label": name, "text": text})
+                    break
+            if limit:
+                points = points[:limit]
+            return points
+
+        def _sources_for(step_id: str):
+            urls = []
+            seen = set()
+            for e in evidence:
+                if e.get("step_id") == step_id and e.get("source_uri") and e["source_uri"] not in seen:
+                    seen.add(e["source_uri"])
+                    urls.append(e["source_uri"])
+            return urls
+
+        sections: list[dict] = []
+
+        # 1. 公司概览
+        overview_points = []
+        latest_period = ""
+        for e in evidence:
+            period = e.get("period") or ""
+            if period > latest_period:
+                latest_period = period
+        if latest_period:
+            overview_points.append({"label": "最新报告期", "text": f"最新财务报告期：{latest_period}"})
+        sections.append({
+            "key": "overview",
+            "title": "公司概览",
+            "content": f"{run.get('company') or '研究对象'}（{run.get('symbol') or ''} · {run.get('market') or ''}）",
+            "points": overview_points,
+            "source_urls": [],
+        })
+
+        # 2. 股价表现
+        price_points = _points_for("fetch_prices", include=("最新收盘价", "区间涨跌幅", "区间最高价", "区间最低价"))
+        if not price_points:
+            price_points = _points_for("get_quote")
+        sections.append({
+            "key": "price",
+            "title": "股价表现",
+            "content": "基于近期日线行情（AkShare）与实时快照，仅呈现客观价格数据。",
+            "points": price_points,
+            "source_urls": _sources_for("fetch_prices") or _sources_for("get_quote"),
+        })
+
+        # 3. 财务摘要（最新一期核心指标）
+        financial_points = _points_for(
+            "fetch_statements",
+            include=("营业总收入", "归属母公司净利润", "ROE", "销售毛利率", "资产负债率", "基本每股收益", "每股净资产", "经营现金流"),
+            limit=12,
+        )
+        sections.append({
+            "key": "financial-summary",
+            "title": "财务摘要",
+            "content": "最新报告期核心财务指标（完整指标见财务分析章节）。",
+            "points": financial_points,
+            "source_urls": _sources_for("fetch_statements"),
+        })
+
+        # 4. 财务分析：按能力分类
+        profitability = _points_for("fetch_statements", include=("ROE", "毛利率", "净利率", "ROA", "ROIC"))
+        growth = _points_for("fetch_statements", include=("同比", "环比"))
+        solvency = _points_for("fetch_statements", include=("资产负债率", "流动比率", "速动比率", "现金比率", "权益乘数"))
+        cashflow = _points_for("fetch_statements", include=("现金流", "现金"))
+        analysis_groups = [
+            ("盈利能力", profitability),
+            ("成长性", growth),
+            ("偿债与流动性", solvency),
+            ("现金流", cashflow),
+        ]
+        for label, points in analysis_groups:
+            if not points:
+                continue
+            sections.append({
+                "key": f"analysis-{label}",
+                "title": f"财务分析 · {label}",
+                "content": "",
+                "points": points[:10],
+                "source_urls": _sources_for("fetch_statements"),
+            })
+
+        # 5. 证据与来源
+        source_items = []
+        seen_urls = set()
+        for e in evidence:
+            url = e.get("source_uri") or ""
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            source_items.append({"label": e.get("publisher") or "来源", "text": e.get("source_title") or url})
+        sections.append({
+            "key": "sources",
+            "title": "证据与来源",
+            "content": f"本报告共引用 {len(evidence)} 条持久化证据，以下为主要来源。",
+            "points": source_items[:20],
+            "source_urls": list(seen_urls),
+        })
+
+        return sections
 
     def _render_summary(self, verified, evidence):
         if not verified:
