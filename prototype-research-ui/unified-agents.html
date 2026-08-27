@@ -52,7 +52,7 @@
     .brand-copy span{display:block;margin-top:2px;color:var(--muted);font-size:12px}
     .new-case{width:100%;min-height:44px;border:0;border-radius:10px;background:var(--pine);color:#fff;font-weight:700;box-shadow:0 8px 18px rgba(20,90,70,.16)}
     .rail-label{margin:24px 8px 9px;color:var(--muted);font-size:12px;font-weight:600}
-    .case-list{display:grid;gap:5px;position:relative}
+    .case-list{display:grid;gap:5px;position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;align-content:start;padding:2px 6px 10px 0;scrollbar-width:thin}
     .case-item{position:relative;display:flex;align-items:stretch;border-radius:9px}
     .case-item.selected{background:rgba(255,255,255,.82)}
     .case{flex:1;min-width:0;border:0;border-radius:9px;background:transparent;padding:10px 6px 10px 10px;text-align:left;color:var(--text);position:relative}
@@ -73,6 +73,7 @@
     .case-menu-toggle[aria-expanded="true"]{background:rgba(20,90,70,.1);color:var(--pine)}
     .case-menu{position:absolute;z-index:30;top:100%;right:4px;margin-top:4px;min-width:148px;padding:4px;background:#fff;border:1px solid var(--line-strong);border-radius:9px;box-shadow:var(--shadow);font-family:var(--font)}
     .case-menu[hidden]{display:none}
+    .case-menu.case-menu-above{top:auto;bottom:100%;margin-top:0;margin-bottom:8px}
     .case-menu-item{display:flex;align-items:center;gap:10px;width:100%;border:0;background:transparent;padding:9px 14px;text-align:left;font-size:13px;font-weight:600;color:var(--text);border-radius:6px;font-family:var(--font);letter-spacing:.01em}
     .case-menu-item .case-menu-icon{flex:0 0 auto;width:14px;height:14px;color:var(--muted);transition:transform .14s,color .14s}
     .case-menu-item:hover{background:var(--pine-soft);color:var(--pine-dark)}
@@ -1148,8 +1149,26 @@
     }
 
     function closeAllCaseMenus() {
-      document.querySelectorAll('.case-menu').forEach(menu => { menu.hidden = true; });
+      document.querySelectorAll('.case-menu').forEach(menu => {
+        menu.hidden = true;
+        menu.classList.remove('case-menu-above');
+      });
       document.querySelectorAll('.case-menu-toggle').forEach(toggle => toggle.setAttribute('aria-expanded', 'false'));
+    }
+
+    function positionCaseMenu(item, menu) {
+      // Flip the menu upward when there is not enough visible space below,
+      // so it is not clipped by the rail or the scrollable case list.
+      const list = item.closest('.case-list');
+      const itemRect = item.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const viewportBottom = list ? list.getBoundingClientRect().bottom : window.innerHeight;
+      const spaceBelow = viewportBottom - itemRect.bottom;
+      if (spaceBelow < menuRect.height + 12) {
+        menu.classList.add('case-menu-above');
+      } else {
+        menu.classList.remove('case-menu-above');
+      }
     }
 
     function startInlineRename(item) {
@@ -1637,6 +1656,8 @@
     
     document.querySelectorAll('.rail').forEach(panel => panel.addEventListener('wheel', event => {
       if (window.innerWidth > 760 && event.deltaY !== 0) {
+        // Let the case list scroll natively when the pointer is over it.
+        if (event.target.closest('.case-list')) return;
         ui.scrollArea.scrollBy({ top: event.deltaY, left: 0, behavior: 'auto' });
         event.preventDefault();
       }
@@ -1694,6 +1715,7 @@
         if (!wasOpen) {
           menu.hidden = false;
           toggle.setAttribute('aria-expanded', 'true');
+          positionCaseMenu(item, menu);
         }
         return;
       }
