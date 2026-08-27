@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+import time
+
 
 from backend.schemas import EntityResolution, SecurityCandidate
 
@@ -22,11 +24,42 @@ def _normalized(value: str) -> str:
     return re.sub(r"[\s·・,，。()（）]", "", value).upper()
 
 
+
+_AKSHARE_CACHE: tuple[float, list[dict[str, Any]]] | None = None
+
 class EntityResolver:
     def __init__(self, catalog_path: str | Path | None = None):
         path = Path(catalog_path) if catalog_path else Path(__file__).with_name("securities.json")
         rows: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8"))
         self._rows = rows
+
+    def _akshare_rows(self) -> list[dict[str, Any]]:
+        """Best-effort A-share company catalogue via AkShare (cached 1 hour)."""
+        global _AKSHARE_CACHE
+        now = time.time()
+        if _AKSHARE_CACHE is not None and now - _AKSHARE_CACHE[0] < 3600:
+            return _AKSHARE_CACHE[1]
+        rows: list[dict[str, Any]] = []
+        try:
+            import akshare as ak
+            frame = ak.stock_info_a_code_name()
+            for _, row in frame.iterrows():
+                code = str(row["code"]).strip()
+                if not code:
+                    continue
+                suffix = "SH" if code.startswith("6") else "SZ"
+                symbol = f"{code}.{suffix}"
+                name = str(row["name"]).strip()
+                rows.append({
+                    "company": name,
+                    "symbol": symbol,
+                    "market": "CN",
+                    "aliases": [name],
+                })
+        except Exception:
+            rows = []
+        _AKSHARE_CACHE = (now, rows)
+        return rows
 
     @staticmethod
     def _candidate(row: dict[str, Any], alias: str, confidence: float) -> SecurityCandidate:
@@ -41,6 +74,38 @@ class EntityResolver:
             matched_alias=alias,
         )
 
+    def _alias_resolution(
+        self, rows: list[dict[str, Any]], normalized_text: str,
+    ) -> EntityResolution | None:
+        alias_matches: list[tuple[int, str, dict[str, Any]]] = []
+        for row in rows:
+            for alias in row.get("aliases", []):
+                normalized_alias = _normalized(str(alias))
+                if normalized_alias and normalized_alias in normalized_text:
+                    position = normalized_text.find(normalized_alias)
+                    remainder = normalized_text[position + len(normalized_alias):]
+                    if len(normalized_alias) <= 2 and remainder and not _SHORT_ALIAS_TAIL.search(remainder):
+                        continue
+                    alias_matches.append((len(normalized_alias), str(alias), row))
+        if not alias_matches:
+            return None
+        longest = max(item[0] for item in alias_matches)
+        best = [item for item in alias_matches if item[0] == longest]
+        unique: dict[str, SecurityCandidate] = {}
+        for _length, alias, row in best:
+            candidate = self._candidate(row, alias, 0.98 if len(best) == 1 else 0.92)
+            unique[candidate.candidate_id] = candidate
+        candidates = sorted(unique.values(), key=lambda item: item.candidate_id)
+        if len(candidates) == 1:
+            return EntityResolution(
+                status="resolved", query=best[0][1], candidates=candidates,
+                selected=candidates[0], reason_codes=["UNIQUE_ALIAS"],
+            )
+        return EntityResolution(
+            status="ambiguous", query=best[0][1], candidates=candidates,
+            reason_codes=["MULTIPLE_LISTINGS", "USER_CONFIRMATION_REQUIRED"],
+        )
+
     def resolve(
         self,
         message: str,
@@ -48,12 +113,15 @@ class EntityResolver:
         current_company: str | None = None,
         current_symbol: str | None = None,
         current_market: str | None = None,
+        allow_dynamic: bool = False,
     ) -> EntityResolution:
         text = message.strip()
+        rows = list(self._rows)
+
         symbol_match = _SYMBOL.search(text)
         if symbol_match:
             target = _normalized(symbol_match.group(0))
-            matches = [row for row in self._rows if _normalized(str(row["symbol"])) == target]
+            matches = [row for row in rows if _normalized(str(row["symbol"])) == target]
             if len(matches) == 1:
                 selected = self._candidate(matches[0], symbol_match.group(0), 1.0)
                 return EntityResolution(
@@ -75,33 +143,15 @@ class EntityResolver:
                 )
 
         normalized_text = _normalized(text)
-        alias_matches: list[tuple[int, str, dict[str, Any]]] = []
-        for row in self._rows:
-            for alias in row.get("aliases", []):
-                normalized_alias = _normalized(str(alias))
-                if normalized_alias and normalized_alias in normalized_text:
-                    position = normalized_text.find(normalized_alias)
-                    remainder = normalized_text[position + len(normalized_alias):]
-                    if len(normalized_alias) <= 2 and remainder and not _SHORT_ALIAS_TAIL.search(remainder):
-                        continue
-                    alias_matches.append((len(normalized_alias), str(alias), row))
-        if alias_matches:
-            longest = max(item[0] for item in alias_matches)
-            best = [item for item in alias_matches if item[0] == longest]
-            unique: dict[str, SecurityCandidate] = {}
-            for _length, alias, row in best:
-                candidate = self._candidate(row, alias, 0.98 if len(best) == 1 else 0.92)
-                unique[candidate.candidate_id] = candidate
-            candidates = sorted(unique.values(), key=lambda item: item.candidate_id)
-            if len(candidates) == 1:
-                return EntityResolution(
-                    status="resolved", query=best[0][1], candidates=candidates,
-                    selected=candidates[0], reason_codes=["UNIQUE_ALIAS"],
-                )
-            return EntityResolution(
-                status="ambiguous", query=best[0][1], candidates=candidates,
-                reason_codes=["MULTIPLE_LISTINGS", "USER_CONFIRMATION_REQUIRED"],
+        resolved = self._alias_resolution(rows, normalized_text)
+        if resolved is not None:
+            return resolved
+        if allow_dynamic:
+            resolved = self._alias_resolution(
+                list(self._rows) + self._akshare_rows(), normalized_text,
             )
+            if resolved is not None:
+                return resolved
 
         if current_company and _normalized(current_company) in normalized_text:
             if current_symbol and current_market:

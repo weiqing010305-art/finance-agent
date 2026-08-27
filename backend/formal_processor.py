@@ -712,7 +712,12 @@ class ControlledToolsResearchProcessor:
             markdown, report_json, citations = self._llm_report_to_output(
                 synthesized, evidence, company, question,
             )
-        else:
+            # The durable report contract requires at least one citation. If
+            # the model omitted source_urls, fall back to the deterministic
+            # extractive reporter instead of failing the whole run.
+            if not citations or not report_json.get("complete"):
+                synthesized = None
+        if not synthesized:
             reporter = CitationConstrainedReporter()
             draft = reporter.build_deterministic(
                 company=company, question=question, claims=verified,

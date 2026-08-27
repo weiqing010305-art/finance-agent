@@ -81,7 +81,7 @@ def build_formal_research_router(
         entity: SecurityCandidate
         if payload.market == "AUTO" or not payload.symbol:
             from backend.entity_resolver import EntityResolver
-            resolution = EntityResolver().resolve(payload.question)
+            resolution = EntityResolver().resolve(payload.question, allow_dynamic=True)
             if resolution.status != "resolved" or resolution.selected is None:
                 detail = f"无法自动识别公司（{resolution.status}），请提供明确的公司名称或股票代码"
                 raise HTTPException(status_code=422, detail=detail)
