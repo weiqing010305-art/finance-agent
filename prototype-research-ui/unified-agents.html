@@ -280,8 +280,10 @@
     .login-card .primary{width:100%;margin-top:6px}
     .login-card .error{min-height:18px;margin-top:10px}
     .login-card select{display:block;width:100%;margin-top:6px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;color:var(--ink);background:var(--white)}
-    .settings-toggle{background:transparent;border:0;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 8px}
-    .settings-toggle:hover{color:var(--pine)}
+    .settings-rail{width:100%;min-height:40px;margin-top:12px;border:1px solid var(--line);border-radius:10px;background:var(--white);color:var(--ink);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px}
+    .settings-rail:hover{border-color:var(--pine);color:var(--pine);background:var(--pine-soft)}
+    .settings-actions{display:flex;gap:10px;margin-top:6px}
+    .settings-actions button{flex:1}
 </style>
 </head>
 <body>
@@ -310,7 +312,10 @@
       <label>模型<input id="llm-model" value="deepseek-v4-flash" placeholder="deepseek-v4-flash"></label>
       <label>Base URL<input id="llm-base-url" placeholder="留空使用默认 https://api.deepseek.com"></label>
       <label>API Key<input id="llm-api-key" type="password" placeholder="留空则使用服务端环境变量"></label>
-      <button class="primary" type="submit">保存</button>
+      <div class="settings-actions">
+        <button class="primary" type="submit">保存</button>
+        <button type="button" id="settings-close">完成</button>
+      </div>
       <p id="settings-msg" class="error" role="alert"></p>
     </form>
   </div>
@@ -322,6 +327,9 @@
       <div class="case-list" id="case-list">
         <p class="empty-state">正在读取本地案卷…</p>
       </div>
+      <button class="settings-rail" id="settings-toggle" type="button" aria-label="设置" title="LLM 设置">
+        <span>⚙</span> LLM 设置
+      </button>
     </aside>
 
     <main class="workspace">
@@ -331,7 +339,6 @@
           <div class="task-meta-actions">
             <div class="live-status" id="live-status" aria-live="polite"><span class="live-dot"></span><span>正在连接研究服务</span></div>
             <button class="search-results-toggle" id="search-results-toggle" type="button" aria-expanded="false" aria-controls="search-results-drawer" disabled>查看搜索结果 <span id="search-result-count">0</span></button>
-            <button class="settings-toggle" id="settings-toggle" type="button" aria-label="设置" title="LLM 设置">⚙</button>
           </div>
         </div>
       </header>
@@ -1733,6 +1740,7 @@
     })();
 
     document.getElementById('settings-toggle').addEventListener('click', openSettings);
+    document.getElementById('settings-close').addEventListener('click', closeSettings);
     document.getElementById('settings-form').addEventListener('submit', saveLlmSettings);
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape' && !document.getElementById('settings-modal').hidden) {

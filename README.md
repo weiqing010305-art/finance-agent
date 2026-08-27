@@ -92,11 +92,11 @@ FinScope 是一个面向个人研究者的深度研究（Deep Research）Agent�
 - deterministic 报告改为每个已验证结论一个 section，避免多数字结论在单一 section 中触发引用校验失败。
 - 修复 Docker 初始化脚本 CRLF 行尾（`init-roles.sh` 等），容器可直接执行。
 
-### DeepSeek LLM 综合报告（citation-constrained）
-- 新增 `backend/synthesizer.py`：`DeepSeekReportSynthesizer` 用 DeepSeek Responses API 把已验证证据合成为结构化报告。
-- **模型只能引用已持久化的证据 URL**：prompt 约束 + `_sanitize` 强制剔除非法 URL；无 `DEEPSEEK_API_KEY` 或调用失败时自动降级到确定性 `CitationConstrainedReporter`。
-- worker 接线：`ControlledToolsResearchProcessor(synthesizer=DeepSeekReportSynthesizer.from_env())`。
-- 6 个单测覆盖证据净化 / 缺 key / 非法 JSON / from_env。
+### LLM 综合报告（citation-constrained，多 Provider）
+- 新增 `backend/synthesizer.py`：`DeepSeekReportSynthesizer` 通过 OpenAI-compatible `/chat/completions` 把已验证证据合成为结构化报告，支持 DeepSeek、OpenAI、Qwen、ModelScope、Kimi、智谱、Ollama、vLLM、自定义兼容端点。
+- **模型只能引用已持久化的证据 URL**：prompt 约束 + `_sanitize` 强制剔除非法 URL；未配置 key 或调用失败时自动降级到确定性 `CitationConstrainedReporter`。
+- worker 接线：`ControlledToolsResearchProcessor(synthesizer=tenant_synthesizer)`，每个租户可在前端左下角「设置」里保存自己的 provider / model / base_url / api_key，未保存时回落到服务端 `.env` 的 `DEEPSEEK_API_KEY`（或 `LLM_API_KEY`）。
+- 单测覆盖证据净化 / 缺 key / 非法 JSON / from_env / 多 provider 解析。
 
 ### 前端财务指标表格
 - `renderReport` 检测报告的 `financial_metrics` 字段后，在报告正文顶部渲染「财务指标摘要」表格（指标 / 数值 / 报告期）。
@@ -152,7 +152,7 @@ FinScope 采用**模块化单体**（modular monolith）架构：一份代码、
 - **检索**：Milvus 2.6.2、BAAI/bge-large-zh-v1.5（固定 revision）
 - **对象存储/网关**：MinIO、Caddy
 - **可观测**：OpenTelemetry Collector、Prometheus、Loki、Grafana
-- **LLM**：DeepSeek Responses API（`deepseek-v4-flash`，旧原型联网搜索）
+- **LLM**：OpenAI-compatible Chat Completions（DeepSeek `deepseek-v4-flash` 默认；也支持 OpenAI / Qwen / Kimi / 智谱 / Ollama / vLLM / 自定义端点，前端左下角设置）
 
 ## 阶段演进
 
@@ -221,14 +221,18 @@ docker exec -it finscope-local-postgres-1 psql -U finscope_admin -d finscope   -
 
 ### 启用真实 LLM 综合报告（可选）
 
-综合报告（`backend/synthesizer.py`）默认走 deterministic 路径。要启用 DeepSeek LLM 综合：
+综合报告（`backend/synthesizer.py`）未配置租户 LLM 设置时默认走 deterministic 路径。两种启用方式：
+
+1. **服务端全局**：在项目根目录 `.env` 写入（compose.yaml 已把该变量注入 worker）：
 
 ```env
-# backend/.env
+# .env
 DEEPSEEK_API_KEY=sk-your-key
 ```
 
-重启 worker 后再创建研究任务，新任务的报告就会通过 DeepSeek 综合生成（更自然、可读）。
+2. **按租户设置**：打开前端（`https://localhost:8443`），点击左下角「设置」，选择 Provider、填写 Model / Base URL / API Key，点「保存」；下次研究自动使用该配置，无需改容器环境变量。
+
+保存后重启 worker 或直接新建研究任务，新任务的报告就会通过已配置的 LLM 综合生成（更自然、可读）；未配置或调用失败时仍会安全降级到 deterministic reporter。
 
 ### 已废弃的形态
 
@@ -267,13 +271,13 @@ finance agent/
 │   ├── db/                  # 数据库层（durable、artifacts、metadata、rag_catalog）
 │   ├── jobs/                # Dramatiq 作业（ledger、worker、executor、dispatch）
 │   ├── agent_graph.py       # 路由图 / 研究图编排
-│   ├── deepseek_research.py # DeepSeek Responses API 客户端（联网搜索）
+│   ├── deepseek_research.py # 旧原型 DeepSeek Responses API 客户端（联网搜索）
 │   ├── durable_runner.py    # 六状态持久化 Runner
 │   ├── milvus_retrieval.py  # Milvus 混合检索
 │   ├── evidence.py          # 证据构建
 │   ├── verifier.py          # 结论核验
 │   └── ...                  # planner、retrieval、memory、redaction 等
-├── alembic/                 # 数据库迁移（14 个版本，0001–0014）
+├── alembic/                 # 数据库迁移（15 个版本，0001–0015）
 ├── docs/                    # 设计 / 计划 / 验证 / ADR 决策文档
 ├── evals/                   # 评测用例与打分器
 ├── infra/                   # Caddy / Grafana / Loki / OTel / Prometheus / PG 配置
@@ -297,7 +301,7 @@ finance agent/
 **已经做到（单一产品形态）**：
 
 - **统一前端 `prototype-research-ui/unified-agents.html`**：案卷控制台（左侧案卷导航 + 中间任务报告 + 搜索抽屉 + 底部输入框），是项目当前唯一的前端入口；登录鉴权（tenant + email + password → JWT）、SSE 流式输出（fetch + ReadableStream，支持 Bearer）、ECharts K 线 + 成交量图表（本地 `echarts.min.js`）、结构化报告（公司概览 / 股价表现 / 财务摘要 / 财务分析 / 证据来源）。
-- **PostgreSQL 后端（formal_app）**：行级安全（RLS）、邀请制认证、Alembic 迁移（14 个版本）、Dramatiq 持久化 worker、Caddy 反代、Milvus 混合检索；研究链路（fetch_financial_statements + fetch_stock_prices + extract_financial_facts + calculate_financial_metrics）已在 Docker 全栈端到端跑通（A 股实测 138 条 financial_metrics + 30 根 K 线，**贵州茅台报告：最新收盘价 ¥1292.3、ROE 16.75%、毛利率 89.6%、资产负债率 15.2%**，全部数据为真）。
+- **PostgreSQL 后端（formal_app）**：行级安全（RLS）、邀请制认证、Alembic 迁移（15 个版本）、Dramatiq 持久化 worker、Caddy 反代、Milvus 混合检索；研究链路（fetch_financial_statements + fetch_stock_prices + extract_financial_facts + calculate_financial_metrics）已在 Docker 全栈端到端跑通（A 股实测 138 条 financial_metrics + 30 根 K 线，**贵州茅台报告：最新收盘价 ¥1292.3、ROE 16.75%、毛利率 89.6%、资产负债率 15.2%**，全部数据为真）。
 - **单一「公司分析 Agent」**：原 PRODUCT.md 里规划的三个 Agent（财报 / 市场 / 公司研究）已合并为一条 controlled_tools DAG；单次运行同时产出**股价 + 财报 + 公告 + 分析**。多 Agent 并行已确认**不做**（PRODUCT.md 要求"必须由固定评测证明收益后启用"，当前单 Agent 多工具路径已能满足产品需求且更快、更稳）。
 - **数据源按需降级**：
   - A 股：东方财富 F10（`RPT_F10_FINANCE_MAINFINADATA`，36 字段，无需 key）+ 巨潮公告（无需 key）+ 腾讯行情（无需 key）。
@@ -306,7 +310,7 @@ finance agent/
 
 **仍未做到（诚实声明）**：
 
-- **LLM 综合报告未启用**：合成 deterministic reporter 在没有 `DEEPSEEK_API_KEY` 时产出结构化报告骨架；DeepSeek citation-constrained synthesis 代码已就位（`backend/synthesizer.py`，6 个单测覆盖），但容器目前未注入 API key，所以走 deterministic 路径。若需要真正的 LLM 综合，在 `.env` 设 `DEEPSEEK_API_KEY` 并重启 worker 即可启用。
+- **LLM 综合报告依赖外部网络**：代码和 key 注入已就位（worker 容器现在能解析到 `DEEPSEEK_API_KEY`），但真实生成需要 worker 能访问对应模型端点；未配置 key、网络不可达或调用失败时自动降级到 deterministic reporter（绝不伪造）。
 - **LLM 工具 `search_web` 未启用**：DeepSeek Responses `web_search` 集成已存在（`backend/web_search.py`），需要 `DEEPSEEK_API_KEY` + 配置；未启用时降级到 `search_filings`。
 - **真实 PostgreSQL 集成门默认跳过**：`tests	est_postgres_real_integration.py` 在真实 PG 上执行 Alembic 迁移并验证 RLS 租户隔离（SQLite 契约测试无法覆盖），需设置 `FINSCOPE_TEST_PG_URL`；本机已用 Docker 一次性容器实测通过。
 - **CSP 含 `'unsafe-inline'`（已知安全债）**：unified-agents.html 是内联脚本原型，Caddyfile 因此放行了 `'unsafe-inline'`；未来若把 CSS/JS 拆成外部文件，应收紧回 `'self'`。

@@ -55,9 +55,65 @@ SYNTHESIS_SYSTEM_PROMPT = """你是 FinScope 的受控综合报告 Agent。
 """
 
 
+# Provider -> (default model, default base_url, env var names for api key)
+PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
+    "openai": {
+        "model": "gpt-4o-mini",
+        "base_url": "https://api.openai.com/v1",
+        "env_key": ["OPENAI_API_KEY", "LLM_API_KEY"],
+    },
+    "deepseek": {
+        "model": "deepseek-v4-flash",
+        "base_url": "https://api.deepseek.com",
+        "env_key": ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
+    },
+    "qwen": {
+        "model": "qwen-plus",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "env_key": ["DASHSCOPE_API_KEY", "LLM_API_KEY"],
+    },
+    "modelscope": {
+        "model": "Qwen/Qwen2.5-72B-Instruct",
+        "base_url": "https://api-inference.modelscope.cn/v1/",
+        "env_key": ["MODELSCOPE_API_KEY", "LLM_API_KEY"],
+    },
+    "kimi": {
+        "model": "moonshot-v1-8k",
+        "base_url": "https://api.moonshot.cn/v1",
+        "env_key": ["KIMI_API_KEY", "MOONSHOT_API_KEY", "LLM_API_KEY"],
+    },
+    "zhipu": {
+        "model": "glm-4",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "env_key": ["ZHIPU_API_KEY", "GLM_API_KEY", "LLM_API_KEY"],
+    },
+    "ollama": {
+        "model": "llama3.2",
+        "base_url": "http://localhost:11434/v1",
+        "env_key": ["OLLAMA_API_KEY", "LLM_API_KEY"],
+    },
+    "vllm": {
+        "model": "meta-llama/Llama-2-7b-chat-hf",
+        "base_url": "http://localhost:8000/v1",
+        "env_key": ["VLLM_API_KEY", "LLM_API_KEY"],
+    },
+    "local": {
+        "model": "local-model",
+        "base_url": "http://localhost:8000/v1",
+        "env_key": ["LLM_API_KEY"],
+    },
+    "auto": {
+        "model": "deepseek-v4-flash",
+        "base_url": "https://api.deepseek.com",
+        "env_key": ["LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"],
+    },
+}
+
+
 @dataclass(frozen=True)
 class SynthesizerConfig:
     api_key: str
+    provider: str = "deepseek"
     model: str = DEFAULT_DEEPSEEK_MODEL
     base_url: str = "https://api.deepseek.com"
     timeout_seconds: float = 90.0
@@ -102,10 +158,14 @@ class DeepSeekReportSynthesizer:
         api_key = (settings or {}).get("api_key") or ""
         if not api_key:
             return cls.from_env(transport=transport)
-        model = (settings or {}).get("model") or DEFAULT_DEEPSEEK_MODEL
-        base_url = (settings or {}).get("base_url") or "https://api.deepseek.com"
+        provider = (settings or {}).get("provider") or "deepseek"
+        defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["deepseek"])
+        model = (settings or {}).get("model") or defaults["model"]
+        base_url = (settings or {}).get("base_url") or defaults["base_url"]
         return cls(
-            SynthesizerConfig(api_key=api_key, model=model, base_url=base_url),
+            SynthesizerConfig(
+                provider=provider, api_key=api_key, model=model, base_url=base_url,
+            ),
             transport=transport,
         )
 
@@ -114,23 +174,52 @@ class DeepSeekReportSynthesizer:
         cls,
         env: dict[str, str] | None = None,
         *,
+        provider: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> "DeepSeekReportSynthesizer | None":
+        """Resolve an LLM client from environment variables.
+
+        Provider selection (mirroring hello_agents' llm.py):
+        - explicit ``provider`` argument wins;
+        - otherwise the first provider whose env key is set wins;
+        - ``LLM_MODEL_ID`` / ``LLM_BASE_URL`` / ``LLM_API_KEY`` act as a
+          generic OpenAI-compatible override.
+        """
         import os
 
         values = os.environ if env is None else env
-        key = (values.get("DEEPSEEK_API_KEY") or "").strip()
+        resolved_provider = provider or cls._detect_provider(values)
+        defaults = PROVIDER_DEFAULTS.get(resolved_provider or "deepseek", PROVIDER_DEFAULTS["deepseek"])
+
+        key = (values.get("LLM_API_KEY") or "").strip() or ""
+        if not key:
+            for var in defaults["env_key"]:
+                candidate = (values.get(var) or "").strip()
+                if candidate:
+                    key = candidate
+                    break
         if not key:
             return None
+
+        model = (values.get("LLM_MODEL_ID") or values.get("LLM_MODEL") or "").strip() or defaults["model"]
+        base_url = (values.get("LLM_BASE_URL") or "").strip() or defaults["base_url"]
         return cls(
             SynthesizerConfig(
+                provider=resolved_provider or "auto",
                 api_key=key,
-                model=(values.get("DEEPSEEK_MODEL") or DEFAULT_DEEPSEEK_MODEL).strip()
-                or DEFAULT_DEEPSEEK_MODEL,
-                base_url=(values.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").strip(),
+                model=model,
+                base_url=base_url,
             ),
             transport=transport,
         )
+
+    @staticmethod
+    def _detect_provider(values: dict[str, str]) -> str:
+        ordered = ["openai", "deepseek", "qwen", "modelscope", "kimi", "zhipu", "ollama", "vllm", "local"]
+        for provider in ordered:
+            if any((values.get(var) or "").strip() for var in PROVIDER_DEFAULTS[provider]["env_key"]):
+                return provider
+        return "auto"
 
     async def synthesize(
         self,

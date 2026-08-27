@@ -101,6 +101,7 @@ services:
       JWT_SIGNING_KEY_FILE: /run/secrets/jwt_signing_key
       FINSCOPE_FORMAL_EXECUTOR: ${FINSCOPE_FORMAL_EXECUTOR:-synthetic_smoke}
       TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       MILVUS_URI: http://milvus:19530
       MILVUS_COLLECTION: ${MILVUS_COLLECTION:-finance_agent_chunks_v1}
       RAG_INDEX_VERSION: ${RAG_INDEX_VERSION:-formal_fixture_v1}
