@@ -698,17 +698,47 @@
     }
 
     // ---------- LLM settings ----------
+    const LLM_SETTINGS_KEY = 'finscope.llmSettings';
+
+    function readLocalLlmSettings() {
+      try {
+        const raw = localStorage.getItem(LLM_SETTINGS_KEY);
+        return raw ? JSON.parse(raw) : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function writeLocalLlmSettings(settings) {
+      try {
+        localStorage.setItem(LLM_SETTINGS_KEY, JSON.stringify(settings));
+      } catch (error) {
+        // Local persistence is best-effort; never block the settings dialog.
+      }
+    }
+
+    function applyLlmSettingsToForm(settings) {
+      document.getElementById('llm-provider').value = settings.provider || 'deepseek';
+      document.getElementById('llm-model').value = settings.model || 'deepseek-v4-flash';
+      document.getElementById('llm-base-url').value = settings.base_url || '';
+      const keyInput = document.getElementById('llm-api-key');
+      if (settings.api_key) keyInput.value = settings.api_key;
+      keyInput.placeholder = (settings.api_key_set || settings.api_key)
+        ? '已保存（留空保持现有）' : '留空则使用服务端环境变量';
+    }
+
     async function loadLlmSettings() {
+      // First show what was saved locally so the form is never empty/blank.
+      const local = readLocalLlmSettings();
+      applyLlmSettingsToForm(local);
+
+      // Then sync with the backend; the backend is the source of truth for
+      // whether a tenant key exists (the actual key is never returned).
       try {
         const settings = await api('/settings/llm');
-        document.getElementById('llm-provider').value = settings.provider || 'deepseek';
-        document.getElementById('llm-model').value = settings.model || 'deepseek-v4-flash';
-        document.getElementById('llm-base-url').value = settings.base_url || '';
-        document.getElementById('llm-api-key').value = '';
-        document.getElementById('llm-api-key').placeholder = settings.api_key_set
-          ? '已保存（留空保持现有）' : '留空则使用服务端环境变量';
+        applyLlmSettingsToForm(settings);
       } catch (error) {
-        // Settings are non-critical; ignore load errors.
+        // Backend unavailable: keep the local settings visible.
       }
     }
 
@@ -727,20 +757,29 @@
       event.preventDefault();
       const msg = document.getElementById('settings-msg');
       msg.textContent = '';
+      const payload = {
+        provider: document.getElementById('llm-provider').value,
+        model: document.getElementById('llm-model').value.trim(),
+        base_url: document.getElementById('llm-base-url').value.trim() || null,
+        api_key: document.getElementById('llm-api-key').value.trim() || null,
+      };
+
+      // Save locally first so the form is remembered even if the backend is
+      // temporarily unreachable.
+      writeLocalLlmSettings(payload);
+
       try {
         await api('/settings/llm', {
           method: 'PUT',
-          body: JSON.stringify({
-            provider: document.getElementById('llm-provider').value,
-            model: document.getElementById('llm-model').value.trim(),
-            base_url: document.getElementById('llm-base-url').value.trim() || null,
-            api_key: document.getElementById('llm-api-key').value.trim() || null,
-          }),
+          body: JSON.stringify(payload),
         });
-        msg.textContent = '已保存。下次研究将使用该模型。';
+        // Backend response intentionally omits the key, so keep the typed key
+        // from the form in the local copy.
+        writeLocalLlmSettings({ ...readLocalLlmSettings(), ...payload });
+        msg.textContent = '已保存到本地，并已同步到后端。下次研究将使用该模型。';
         msg.style.color = 'var(--pine)';
       } catch (error) {
-        msg.textContent = error.message;
+        msg.textContent = `已保存在本地，但后端同步失败：${error.message}`;
         msg.style.color = '';
       }
     }

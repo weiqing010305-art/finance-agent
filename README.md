@@ -230,7 +230,7 @@ docker exec -it finscope-local-postgres-1 psql -U finscope_admin -d finscope   -
 DEEPSEEK_API_KEY=sk-your-key
 ```
 
-2. **按租户设置**：打开前端（`https://localhost:8443`），点击左下角「设置」，选择 Provider、填写 Model / Base URL / API Key，点「保存」；下次研究自动使用该配置，无需改容器环境变量。
+2. **按租户设置**：打开前端（`https://localhost:8443`），点击左下角「设置」，选择 Provider、填写 Model / Base URL / API Key，点「保存」；设置会先写入浏览器 `localStorage`（本地记住表单），再同步到后端 `GET/PUT /api/settings/llm`，后端不可达时本地仍会保留；下次研究自动使用该配置，无需改容器环境变量。
 
 保存后重启 worker 或直接新建研究任务，新任务的报告就会通过已配置的 LLM 综合生成（更自然、可读）；未配置或调用失败时仍会安全降级到 deterministic reporter。
 
