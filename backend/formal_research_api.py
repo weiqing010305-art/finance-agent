@@ -129,6 +129,14 @@ def build_formal_research_router(
                             "max_attempts": 1, "estimated_cost": 2,
                         },
                         {
+                            "id": "web_search", "kind": "tool",
+                            "tool_name": "search_web", "dependencies": [],
+                            "input": {"query": payload.question, "max_results": 5},
+                            "success_criteria": ["collect at least five public web results or degrade explicitly"],
+                            "max_attempts": 1, "estimated_cost": 3,
+                        },
+
+                        {
                             "id": "get_quote", "kind": "tool",
                             "tool_name": "get_quote", "dependencies": [],
                             "input": {"symbol": symbol, "market": market},

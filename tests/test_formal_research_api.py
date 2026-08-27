@@ -127,7 +127,7 @@ def test_controlled_tools_profile_persists_full_plan_and_job_kind():
     )
     assert plan["execution_profile"] == "controlled_tools"
     assert [step["id"] for step in plan["steps"]] == [
-        "search_filings", "get_quote", "fetch_prices", "fetch_statements",
+        "search_filings", "web_search", "get_quote", "fetch_prices", "fetch_statements",
         "retrieve_documents", "extract_facts", "calculate_metrics",
         "synthesize_verified_report",
     ]

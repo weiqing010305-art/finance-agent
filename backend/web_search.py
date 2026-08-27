@@ -98,6 +98,20 @@ class DeepSeekWebSearch:
             base_url=(values.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").strip(),
         )
 
+    @classmethod
+    def from_settings(cls, settings: dict[str, Any] | None) -> "DeepSeekWebSearch | None":
+        """Build a web-search client from per-tenant LLM settings."""
+        if not settings:
+            return None
+        key = str(settings.get("api_key") or "").strip()
+        if not key:
+            return None
+        return cls(
+            key,
+            model=str(settings.get("model") or DEFAULT_DEEPSEEK_MODEL).strip(),
+            base_url=str(settings.get("base_url") or "https://api.deepseek.com").strip(),
+        )
+
     async def search(
         self,
         query: str,
@@ -221,7 +235,12 @@ async def search_web(
     *,
     _client: DeepSeekWebSearch | None = None,
 ) -> dict[str, Any]:
-    client = _client or DeepSeekWebSearch.from_env()
+    context_settings = getattr(context, "llm_settings", None) if context is not None else None
+    client = (
+        _client
+        or DeepSeekWebSearch.from_settings(context_settings)
+        or DeepSeekWebSearch.from_env()
+    )
     if client is None:
         return _unavailable_result("DEEPSEEK_API_KEY is not configured; web search unavailable")
     query = (payload.query or payload.question or "").strip()
@@ -278,7 +297,12 @@ async def search_filings(
     else:
         fallback_reason = f"cninfo does not cover market {payload.market}"
 
-    client = _client or DeepSeekWebSearch.from_env()
+    context_settings = getattr(context, "llm_settings", None) if context is not None else None
+    client = (
+        _client
+        or DeepSeekWebSearch.from_settings(context_settings)
+        or DeepSeekWebSearch.from_env()
+    )
     if client is None:
         return _unavailable_result(
             f"filings source unavailable ({fallback_reason}); "

@@ -327,6 +327,7 @@ class ToolInvocationContext:
     plan_version: int
     step_id: str
     idempotency_key: str
+    llm_settings: dict[str, Any] | None = None
 
 
 class ToolRegistry:

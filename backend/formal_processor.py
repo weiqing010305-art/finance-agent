@@ -560,7 +560,7 @@ class ControlledToolsResearchProcessor:
             value = item.get("value"); unit = item.get("unit") or ""
             period = item.get("period") or ""
             text = f"{name} = {value}{unit} ({period})".strip()
-        elif step_id in {"search_filings", "retrieve_documents"}:
+        elif step_id in {"search_filings", "search_web", "retrieve_documents"}:
             title = item.get("title") or "源材料"
             text = f"参考：{title}"
         else:
@@ -635,9 +635,14 @@ class ControlledToolsResearchProcessor:
         # Same authorization + claim + commit pattern as the dev policy.
         self._claim_authorization(principal, run_id, step)
         from backend.tool_registry import ToolInvocationContext
+        try:
+            llm_settings = self.durable.get_llm_settings(principal)
+        except Exception:
+            llm_settings = None
         ctx = ToolInvocationContext(
             run_id=run_id, plan_version=self.plan_version, step_id=step["id"],
             idempotency_key=f"tool:{self.plan_version}:{step['id']}",
+            llm_settings=llm_settings,
         )
         try:
             execution = await registry.execute(tool_name, payload, context=ctx)
