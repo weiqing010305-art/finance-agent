@@ -279,6 +279,9 @@
     .login-card input{display:block;width:100%;margin-top:6px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;color:var(--ink)}
     .login-card .primary{width:100%;margin-top:6px}
     .login-card .error{min-height:18px;margin-top:10px}
+    .login-card select{display:block;width:100%;margin-top:6px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;color:var(--ink);background:var(--white)}
+    .settings-toggle{background:transparent;border:0;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 8px}
+    .settings-toggle:hover{color:var(--pine)}
 </style>
 </head>
 <body>
@@ -291,6 +294,24 @@
       <label>密码<input id="password" type="password" required autocomplete="current-password"></label>
       <button class="primary" type="submit">登录</button>
       <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </div>
+  <div id="settings-modal" class="login-overlay" hidden>
+    <form id="settings-form" class="login-card">
+      <p class="eyebrow">LLM 设置</p>
+      <h2>配置公司分析 Agent 的模型</h2>
+      <label>Provider
+        <select id="llm-provider">
+          <option value="deepseek">DeepSeek</option>
+          <option value="openai">OpenAI 兼容</option>
+          <option value="custom">自定义</option>
+        </select>
+      </label>
+      <label>模型<input id="llm-model" value="deepseek-v4-flash" placeholder="deepseek-v4-flash"></label>
+      <label>Base URL<input id="llm-base-url" placeholder="留空使用默认 https://api.deepseek.com"></label>
+      <label>API Key<input id="llm-api-key" type="password" placeholder="留空则使用服务端环境变量"></label>
+      <button class="primary" type="submit">保存</button>
+      <p id="settings-msg" class="error" role="alert"></p>
     </form>
   </div>
   <div class="app">
@@ -310,6 +331,7 @@
           <div class="task-meta-actions">
             <div class="live-status" id="live-status" aria-live="polite"><span class="live-dot"></span><span>正在连接研究服务</span></div>
             <button class="search-results-toggle" id="search-results-toggle" type="button" aria-expanded="false" aria-controls="search-results-drawer" disabled>查看搜索结果 <span id="search-result-count">0</span></button>
+            <button class="settings-toggle" id="settings-toggle" type="button" aria-label="设置" title="LLM 设置">⚙</button>
           </div>
         </div>
       </header>
@@ -666,6 +688,54 @@
       authState.access = '';
       sessionStorage.removeItem('finscope.access');
       requireLogin();
+    }
+
+    // ---------- LLM settings ----------
+    async function loadLlmSettings() {
+      try {
+        const settings = await api('/settings/llm');
+        document.getElementById('llm-provider').value = settings.provider || 'deepseek';
+        document.getElementById('llm-model').value = settings.model || 'deepseek-v4-flash';
+        document.getElementById('llm-base-url').value = settings.base_url || '';
+        document.getElementById('llm-api-key').value = '';
+        document.getElementById('llm-api-key').placeholder = settings.api_key_set
+          ? '已保存（留空保持现有）' : '留空则使用服务端环境变量';
+      } catch (error) {
+        // Settings are non-critical; ignore load errors.
+      }
+    }
+
+    function openSettings() {
+      loadLlmSettings();
+      const modal = document.getElementById('settings-modal');
+      if (modal) modal.hidden = false;
+    }
+
+    function closeSettings() {
+      const modal = document.getElementById('settings-modal');
+      if (modal) modal.hidden = true;
+    }
+
+    async function saveLlmSettings(event) {
+      event.preventDefault();
+      const msg = document.getElementById('settings-msg');
+      msg.textContent = '';
+      try {
+        await api('/settings/llm', {
+          method: 'PUT',
+          body: JSON.stringify({
+            provider: document.getElementById('llm-provider').value,
+            model: document.getElementById('llm-model').value.trim(),
+            base_url: document.getElementById('llm-base-url').value.trim() || null,
+            api_key: document.getElementById('llm-api-key').value.trim() || null,
+          }),
+        });
+        msg.textContent = '已保存。下次研究将使用该模型。';
+        msg.style.color = 'var(--pine)';
+      } catch (error) {
+        msg.textContent = error.message;
+        msg.style.color = '';
+      }
     }
 
     async function api(path, options = {}) {
@@ -1661,6 +1731,14 @@
         if (cite) positionCite(cite);
       }, true);
     })();
+
+    document.getElementById('settings-toggle').addEventListener('click', openSettings);
+    document.getElementById('settings-form').addEventListener('submit', saveLlmSettings);
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !document.getElementById('settings-modal').hidden) {
+        closeSettings();
+      }
+    });
 
     document.getElementById('login-form').addEventListener('submit', async (event) => {
       event.preventDefault();

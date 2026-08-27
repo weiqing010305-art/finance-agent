@@ -671,6 +671,10 @@ class ControlledToolsResearchProcessor:
         ]
         synthesized: dict[str, Any] | None = None
         synthesizer = self.synthesizer
+        if callable(synthesizer):
+            # A factory callable receives the principal so per-tenant LLM
+            # settings can be loaded lazily at report time.
+            synthesizer = synthesizer(principal)
         if synthesizer is None:
             from backend.synthesizer import DeepSeekReportSynthesizer
             synthesizer = DeepSeekReportSynthesizer.from_env()

@@ -80,6 +80,36 @@ class DeepSeekReportSynthesizer:
         self.transport = transport
 
     @classmethod
+    def from_tenant(
+        cls,
+        principal: Any,
+        repository: Any,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> "DeepSeekReportSynthesizer | None":
+        """Build a synthesizer from the tenant's stored LLM settings, falling
+        back to the server-level environment variables when the tenant has not
+        configured their own key.
+
+        ``repository`` must expose ``get_llm_settings(principal)`` (the PG
+        durable repository does). Returns ``None`` when neither a tenant key
+        nor a server ``DEEPSEEK_API_KEY`` is available.
+        """
+        try:
+            settings = repository.get_llm_settings(principal)
+        except Exception:
+            settings = None
+        api_key = (settings or {}).get("api_key") or ""
+        if not api_key:
+            return cls.from_env(transport=transport)
+        model = (settings or {}).get("model") or DEFAULT_DEEPSEEK_MODEL
+        base_url = (settings or {}).get("base_url") or "https://api.deepseek.com"
+        return cls(
+            SynthesizerConfig(api_key=api_key, model=model, base_url=base_url),
+            transport=transport,
+        )
+
+    @classmethod
     def from_env(
         cls,
         env: dict[str, str] | None = None,

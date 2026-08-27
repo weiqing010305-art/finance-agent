@@ -321,3 +321,15 @@ Index("ix_evidence_items_pg_run", evidence_items_pg.c.tenant_id, evidence_items_
 Index("ix_claims_pg_run", claims_pg.c.tenant_id, claims_pg.c.run_id)
 Index("ix_memory_records_pg_expiry", memory_records_pg.c.tenant_id, memory_records_pg.c.status, memory_records_pg.c.expires_at)
 Index("ix_audit_events_pg_expiry", audit_events_pg.c.expires_at)
+
+
+tenant_llm_settings_pg = Table(
+    "tenant_llm_settings_pg", metadata,
+    Column("tenant_id", ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True),
+    Column("provider", String(32), nullable=False, server_default="deepseek"),
+    Column("model", String(64), nullable=False, server_default="deepseek-v4-flash"),
+    Column("base_url", String(255), nullable=True),
+    Column("api_key_encrypted", Text, nullable=True),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+

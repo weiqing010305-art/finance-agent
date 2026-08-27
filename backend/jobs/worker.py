@@ -54,9 +54,15 @@ def _configure_formal_worker() -> None:
     handlers = {"synthetic_smoke_research": synthetic_processor}
     if profile == "controlled_tools":
         from backend.synthesizer import DeepSeekReportSynthesizer
+
+        def tenant_synthesizer(principal):
+            # Resolve the LLM client from the tenant's stored settings at
+            # report time; falls back to server-level env when unset.
+            return DeepSeekReportSynthesizer.from_tenant(principal, durable)
+
         handlers["controlled_tools_research"] = ControlledToolsResearchProcessor(
             durable, artifacts,
-            synthesizer=DeepSeekReportSynthesizer.from_env(),
+            synthesizer=tenant_synthesizer,
         )
     if profile == "real_rag_local":
         from backend.authorized_retrieval import AuthorizedChunkCatalog, AuthorizedMilvusRetriever

@@ -15,6 +15,7 @@ from backend.db.metadata import (
     job_outbox, jobs,
     research_checkpoints_pg, research_events_pg, research_leases_pg,
     execution_authorizations_pg,
+    tenant_llm_settings_pg,
     research_plans_pg, research_runs_pg, research_steps_pg,
 )
 from backend.db.session import principal_transaction
@@ -367,6 +368,71 @@ class PostgresDurableRepository:
                 research_runs_pg.c.tenant_id == principal.tenant_id,
             )))
             return result.rowcount == 1
+
+    def get_llm_settings(self, principal: PrincipalContext) -> dict:
+        """Per-tenant LLM configuration (provider / model / base_url / api_key).
+
+        ``api_key`` is returned only when the tenant explicitly saved one in
+        the database; a missing row means callers should fall back to the
+        server-level ``DEEPSEEK_API_KEY`` environment variable. The stored
+        value is plaintext in this dev iteration — production deployments
+        should wrap ``tenant_llm_settings_pg`` with column-level encryption
+        or move the secret to a KMS.
+        """
+        with principal_transaction(self.engine, principal) as connection:
+            row = connection.execute(select(tenant_llm_settings_pg).where(
+                tenant_llm_settings_pg.c.tenant_id == principal.tenant_id,
+            )).mappings().one_or_none()
+        if row is None:
+            return {
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "base_url": None,
+                "api_key": None,
+                "api_key_set": False,
+                "source": "env_fallback",
+            }
+        return {
+            "provider": row["provider"],
+            "model": row["model"],
+            "base_url": row["base_url"],
+            "api_key": row["api_key_encrypted"],
+            "api_key_set": bool(row["api_key_encrypted"]),
+            "source": "database",
+        }
+
+    def set_llm_settings(
+        self,
+        principal: PrincipalContext,
+        *,
+        provider: str,
+        model: str,
+        api_key: str | None,
+        base_url: str | None,
+    ) -> dict:
+        """Upsert the tenant's LLM settings. ``api_key`` is stored as given;
+        pass an empty string to clear the stored key (fall back to env)."""
+        from datetime import datetime, timezone
+        stored_key = api_key if api_key else None
+        with principal_transaction(self.engine, principal) as connection:
+            row = connection.execute(select(tenant_llm_settings_pg).where(
+                tenant_llm_settings_pg.c.tenant_id == principal.tenant_id,
+            )).mappings().one_or_none()
+            if row is None:
+                connection.execute(insert(tenant_llm_settings_pg).values(
+                    tenant_id=principal.tenant_id, provider=provider, model=model,
+                    base_url=base_url or None, api_key_encrypted=stored_key,
+                    updated_at=datetime.now(timezone.utc),
+                ))
+            else:
+                connection.execute(update(tenant_llm_settings_pg).where(
+                    tenant_llm_settings_pg.c.tenant_id == principal.tenant_id,
+                ).values(
+                    provider=provider, model=model,
+                    base_url=base_url or None, api_key_encrypted=stored_key,
+                    updated_at=datetime.now(timezone.utc),
+                ))
+        return self.get_llm_settings(principal)
 
     def get_completed_step(
         self, principal: PrincipalContext, run_id: str, step_id: str,

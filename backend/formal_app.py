@@ -30,6 +30,14 @@ from backend.schema_compat import CURRENT_ALEMBIC_REVISION
 from backend.telemetry import instrument_fastapi
 
 
+class LLMSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: str = Field(default="deepseek", min_length=1, max_length=32)
+    model: str = Field(default="deepseek-v4-flash", min_length=1, max_length=64)
+    base_url: str | None = Field(default=None, max_length=255)
+    api_key: str | None = Field(default=None, max_length=512)
+
+
 class ResourceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: str = Field(min_length=1, max_length=32)
@@ -176,6 +184,40 @@ def create_formal_app(settings: RuntimeSettings | None = None) -> FastAPI:
                 rows.append({"alias": alias, "company": entry["company"],
                              "symbol": entry["symbol"], "market": entry["market"]})
         return {"securities": rows}
+
+    @app.get("/api/settings/llm")
+    def get_llm_settings(
+        principal: PrincipalContext = Depends(can_read),
+    ) -> dict:
+        settings = durable.get_llm_settings(principal)
+        # Never send the raw key back to the browser; only a boolean flag.
+        return {
+            "provider": settings["provider"],
+            "model": settings["model"],
+            "base_url": settings["base_url"],
+            "api_key_set": settings["api_key_set"],
+            "source": settings["source"],
+        }
+
+    @app.put("/api/settings/llm")
+    def put_llm_settings(
+        payload: LLMSettingsUpdate,
+        principal: PrincipalContext = Depends(can_create),
+    ) -> dict:
+        saved = durable.set_llm_settings(
+            principal,
+            provider=payload.provider,
+            model=payload.model,
+            api_key=payload.api_key,
+            base_url=payload.base_url,
+        )
+        return {
+            "provider": saved["provider"],
+            "model": saved["model"],
+            "base_url": saved["base_url"],
+            "api_key_set": saved["api_key_set"],
+            "source": saved["source"],
+        }
 
     @app.post("/api/resources", status_code=status.HTTP_201_CREATED)
     def create_resource(
