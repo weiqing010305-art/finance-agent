@@ -13,7 +13,7 @@
 
 直接用浏览器打开 `index.html`，页面会进入已选定的 `unified-agents.html` 案卷控制台。
 
-`case-console-prototype.html` 保留为本轮样式原型参考；正式前端入口以 `unified-agents.html` 为准。
+`formal-console.html` 与 `case-console-prototype.html` 已移除；前端基线统一为 `unified-agents.html`。
 
 页面中的公司结论和来源摘录均为合成演示内容，不代表真实研究结果。
 

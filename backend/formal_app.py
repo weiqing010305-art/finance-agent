@@ -156,6 +156,27 @@ def create_formal_app(settings: RuntimeSettings | None = None) -> FastAPI:
             "research_executor": runtime.formal_executor,
         }
 
+    @app.get("/api/securities")
+    def list_securities() -> dict[str, list[dict[str, str]]]:
+        """Lightweight alias catalogue for the composer's live company label.
+
+        Mirrors the SQLite prototype endpoint; the data comes from the same
+        ``backend/securities.json`` catalogue via the EntityResolver.
+        """
+        from backend.entity_resolver import EntityResolver
+        resolver = EntityResolver()
+        seen: set[tuple[str, str]] = set()
+        rows: list[dict[str, str]] = []
+        for entry in resolver._rows:
+            key = (entry["company"], entry["symbol"])
+            if key in seen:
+                continue
+            seen.add(key)
+            for alias in entry.get("aliases", []):
+                rows.append({"alias": alias, "company": entry["company"],
+                             "symbol": entry["symbol"], "market": entry["market"]})
+        return {"securities": rows}
+
     @app.post("/api/resources", status_code=status.HTTP_201_CREATED)
     def create_resource(
         payload: ResourceCreate,

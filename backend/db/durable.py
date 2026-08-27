@@ -322,6 +322,52 @@ class PostgresDurableRepository:
         decoded["reason_codes"] = json.loads(decoded.pop("reason_codes_json"))
         return decoded
 
+    def list_events(
+        self, principal: PrincipalContext, run_id: str, after_at: str | None = None,
+    ) -> list[dict]:
+        """Return persisted run events in ascending chronological order.
+
+        ``after_at`` is an ISO-8601 timestamp; only events created strictly
+        after it are returned. This is used by the SSE endpoint because the
+        PG event id is a UUID (not an auto-increment counter).
+        """
+        filters = [
+            research_events_pg.c.run_id == run_id,
+            research_events_pg.c.tenant_id == principal.tenant_id,
+        ]
+        if after_at:
+            filters.append(research_events_pg.c.created_at > after_at)
+        with principal_transaction(self.engine, principal) as connection:
+            rows = connection.execute(select(research_events_pg).where(
+                and_(*filters)
+            ).order_by(research_events_pg.c.created_at)).mappings().all()
+        events = []
+        for row in rows:
+            event = dict(row)
+            event["task_id"] = event.get("run_id")
+            event["payload"] = json.loads(event.pop("payload_json")) if event.get("payload_json") else None
+            event["message"] = (event.get("payload") or {}).get("message") or ""
+            event["created_at"] = event.get("created_at").isoformat() if event.get("created_at") else ""
+            events.append(event)
+        return events
+
+    def list_runs(self, principal: PrincipalContext, limit: int = 50) -> list[dict]:
+        """Return the most recent runs for the principal (newest first)."""
+        with principal_transaction(self.engine, principal) as connection:
+            rows = connection.execute(select(research_runs_pg).where(
+                research_runs_pg.c.tenant_id == principal.tenant_id,
+            ).order_by(research_runs_pg.c.updated_at.desc()).limit(max(1, min(limit, 200)))).mappings().all()
+        return [dict(row) for row in rows]
+
+    def delete_run(self, principal: PrincipalContext, run_id: str) -> bool:
+        """Delete a run (cascade removes plans/checkpoints/steps/events/artifacts)."""
+        with principal_transaction(self.engine, principal) as connection:
+            result = connection.execute(delete(research_runs_pg).where(and_(
+                research_runs_pg.c.id == run_id,
+                research_runs_pg.c.tenant_id == principal.tenant_id,
+            )))
+            return result.rowcount == 1
+
     def get_completed_step(
         self, principal: PrincipalContext, run_id: str, step_id: str,
     ) -> dict | None:

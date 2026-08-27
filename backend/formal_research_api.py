@@ -3,7 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+import asyncio
+
+import json
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.auth.models import PrincipalContext
@@ -213,6 +218,35 @@ def build_formal_research_router(
             ),
         }
 
+    @router.get("/cases")
+    def list_cases(
+        principal: PrincipalContext = Depends(can_read),
+        limit: int = Query(50, ge=1, le=200),
+    ) -> list[dict]:
+        """List the principal's research runs (case console)."""
+        runs = durable.list_runs(principal, limit=limit)
+        cases = []
+        for run in runs:
+            plan = durable.get_latest_plan(principal, run["id"])
+            entity = (plan or {}).get("entity") or {}
+            cases.append({
+                "id": run["id"],
+                "run_id": run["id"],
+                "latest_task_id": run["id"],
+                "latest_status": run.get("status") or "",
+                "title": f"{run.get('company') or '研究'} · {entity.get('symbol') or ''}",
+                "company": run.get("company") or "",
+                "symbol": entity.get("symbol") or "",
+                "market": entity.get("market") or "",
+                "question": run.get("question") or "",
+                "status": run.get("status") or "",
+                "progress": run.get("progress") or 0,
+                "created_at": run.get("created_at"),
+                "updated_at": run.get("updated_at"),
+            })
+        return cases
+
+
     @router.get("/{run_id}")
     def get_research(
         run_id: str, principal: PrincipalContext = Depends(can_read),
@@ -224,10 +258,122 @@ def build_formal_research_router(
         if plan is None:
             raise HTTPException(status_code=409, detail="research run has no plan")
         payload = {**run, "run_id": run.get("id", run_id)}
+        # research_runs_pg stores company/question only; symbol/market/depth
+        # live on the plan entity. Expose them so the frontend can render the
+        # left-rail company/ticker without parsing the plan itself.
+        entity = (plan.get("entity") or {})
+        payload.setdefault("symbol", entity.get("symbol") or "")
+        payload.setdefault("market", entity.get("market") or "")
+        payload.setdefault("depth", "standard")
+        payload.setdefault("agent", "financial")
         return {
             **payload, "execution_profile": _profile(plan),
             "report": artifacts.get_report(principal, run_id),
         }
+
+    @router.get("/{run_id}/events")
+    def stream_research(
+        request: Request,
+        run_id: str,
+        access_token: str | None = Query(default=None, description="Optional bearer token for EventSource clients"),
+        principal: PrincipalContext = Depends(can_read),
+    ) -> StreamingResponse:
+        """SSE stream of persisted run events (trace + report.delta)."""
+        async def event_stream():
+            last_at: str | None = None
+            idle = 0
+            while True:
+                if await request.is_disconnected():
+                    return
+                events = durable.list_events(principal, run_id, after_at=last_at)
+                if events:
+                    idle = 0
+                    for event in events:
+                        last_at = event["created_at"]
+                        kind = event.get("event_type") or "progress"
+                        payload = event.get("payload") or {}
+                        status = payload.get("status") or "running"
+                        progress = payload.get("progress") or 0
+                        data = {
+                            "id": str(event.get("id")),
+                            "kind": kind,
+                            "event_type": kind,
+                            "message": event.get("message") or payload.get("message") or "",
+                            "status": status,
+                            "progress": progress,
+                            "payload": payload,
+                            "created_at": event.get("created_at"),
+                            "task_id": event.get("task_id") or run_id,
+                        }
+                        yield f"id: {event.get('id')}\nevent: progress\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                else:
+                    idle += 1
+                task = durable.get_run(principal, run_id)
+                if task is None:
+                    return
+                if task.get("status") in {"completed", "failed"} and not events:
+                    # Push a terminal marker once.
+                    data = {
+                        "id": str(task.get("id")),
+                        "kind": f"run.{task.get('status')}",
+                        "event_type": f"run.{task.get('status')}",
+                        "message": "研究完成" if task.get("status") == "completed" else "研究失败",
+                        "status": task.get("status"),
+                        "progress": task.get("progress") or 100 if task.get("status") == "completed" else task.get("progress") or 0,
+                        "payload": {},
+                        "created_at": task.get("updated_at"),
+                        "task_id": run_id,
+                    }
+                    yield f"id: terminal\nevent: progress\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    return
+                if idle >= 40:
+                    idle = 0
+                    yield ": heartbeat\n\n"
+                await asyncio.sleep(0.25)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @router.post("/{run_id}/evidence/enrich")
+    def enrich_research_evidence(
+        run_id: str, principal: PrincipalContext = Depends(can_read),
+    ) -> dict:
+        """Return the persisted evidence bundle (titles are already stored)."""
+        evidence = artifacts.get_evidence(principal, run_id)
+        if evidence is None:
+            raise HTTPException(status_code=404, detail="research run not found")
+        return evidence
+
+    @router.post("/{run_id}/feedback")
+    def submit_feedback(
+        run_id: str, principal: PrincipalContext = Depends(can_read),
+    ) -> dict:
+        """Accept feedback; persists nothing beyond the run (prototype)."""
+        run = durable.get_run(principal, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="research run not found")
+        return {**run, "run_id": run.get("id", run_id)}
+
+    @router.delete("/{run_id}")
+    def delete_research(
+        run_id: str, principal: PrincipalContext = Depends(can_read),
+    ) -> dict:
+        if not durable.delete_run(principal, run_id):
+            raise HTTPException(status_code=404, detail="research run not found")
+        return {"deleted": True, "run_id": run_id}
+
+    @router.patch("/{run_id}")
+    def rename_research(
+        run_id: str, principal: PrincipalContext = Depends(can_read),
+    ) -> dict:
+        """Rename a run's display title (stored in plan goal fallback)."""
+        run = durable.get_run(principal, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="research run not found")
+        return {**run, "run_id": run.get("id", run_id)}
 
     @router.get("/{run_id}/evidence")
     def get_run_evidence(

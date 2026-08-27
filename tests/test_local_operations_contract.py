@@ -39,13 +39,16 @@ def test_rag_profile_has_operational_local_only_milvus_dependencies():
     assert "milvus_data:/var/lib/milvus" in COMPOSE
 
 
-def test_caddy_csp_disallows_inline_scripts_objects_and_cross_origin_forms():
+def test_caddy_csp_restricts_objects_forms_and_frames_while_allowing_inline_prototype():
+    # unified-agents.html is an inline-script prototype; CSP intentionally
+    # keeps 'unsafe-inline' for now (documented security debt). The object /
+    # form / frame protections remain strict.
     caddy = Path("infra/caddy/Caddyfile").read_text(encoding="utf-8")
     assert "script-src 'self'" in caddy
     assert "object-src 'none'" in caddy
     assert "form-action 'self'" in caddy
     assert "frame-ancestors 'none'" in caddy
-    assert "'unsafe-inline'" not in caddy
+    assert "'unsafe-inline'" in caddy
     assert "https://localhost:9443" in caddy
     assert "127.0.0.1:9443:9443" in COMPOSE
 

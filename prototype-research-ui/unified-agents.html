@@ -270,9 +270,29 @@
     .confirm-actions .confirm-danger:hover{background:#8b312d;color:#fff;border-color:#8b312d}
 
     @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
-  </style>
+  
+    .login-overlay{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:rgba(20,90,70,.12);backdrop-filter:blur(4px)}
+    .login-overlay[hidden]{display:none}
+    .login-card{width:min(380px,90vw);padding:28px;border:1px solid var(--line-strong);border-radius:16px;background:var(--sheet);box-shadow:0 24px 60px rgba(23,32,29,.18)}
+    .login-card h2{margin:0 0 18px;font-size:20px;color:var(--ink)}
+    .login-card label{display:block;margin:0 0 14px;font-size:12px;color:var(--muted)}
+    .login-card input{display:block;width:100%;margin-top:6px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;color:var(--ink)}
+    .login-card .primary{width:100%;margin-top:6px}
+    .login-card .error{min-height:18px;margin-top:10px}
+</style>
 </head>
 <body>
+  <div id="login-view" class="login-overlay">
+    <form id="login-form" class="login-card">
+      <p class="eyebrow">FinScope · 登录</p>
+      <h2>进入公司分析工作台</h2>
+      <label>租户 ID<input id="tenant-id" required autocomplete="organization"></label>
+      <label>邮箱<input id="email" type="email" required autocomplete="username"></label>
+      <label>密码<input id="password" type="password" required autocomplete="current-password"></label>
+      <button class="primary" type="submit">登录</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </div>
   <div class="app">
     <aside class="rail" aria-label="案卷导航">
       <div class="brand"><img class="brand-mark" src="finscope-mark.png" alt="FinScope" /><div class="brand-copy"><strong>FinScope</strong><span>公司研究工作台</span></div></div>
@@ -349,9 +369,9 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script src="./echarts.min.js" onerror="(function(){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js';document.head.appendChild(s);})()"></script>
   <script>
-    const API_BASE = 'http://127.0.0.1:8780/api';
+    const API_BASE = '/api';
     const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
     
     const ui = {
@@ -592,9 +612,66 @@
       ui.input.addEventListener('input', syncComposerCompany);
     }
 
+    // ---------- auth ----------
+    const authState = {
+      access: sessionStorage.getItem('finscope.access') || '',
+      refreshAttempting: false,
+    };
+
+    function requireLogin() {
+      const overlay = document.getElementById('login-view');
+      if (overlay) overlay.hidden = false;
+    }
+
+    function hideLogin() {
+      const overlay = document.getElementById('login-view');
+      if (overlay) overlay.hidden = true;
+    }
+
+    async function login(tenantId, email, password) {
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ tenant_id: tenantId, email, password }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || `登录失败 (${response.status})`);
+      authState.access = body.access_token;
+      sessionStorage.setItem('finscope.access', authState.access);
+    }
+
+    async function refreshToken() {
+      if (authState.refreshAttempting) return false;
+      authState.refreshAttempting = true;
+      try {
+        const response = await fetch(`${API_BASE}/auth/refresh`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (!response.ok) return false;
+        const body = await response.json();
+        authState.access = body.access_token;
+        sessionStorage.setItem('finscope.access', authState.access);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        authState.refreshAttempting = false;
+      }
+    }
+
+    function logout() {
+      authState.access = '';
+      sessionStorage.removeItem('finscope.access');
+      requireLogin();
+    }
+
     async function api(path, options = {}) {
       const method = (options.method || 'GET').toUpperCase();
       const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      if (authState.access) headers.Authorization = `Bearer ${authState.access}`;
       // formal_app requires Idempotency-Key on mutating endpoints.
       if ((method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE')
           && !headers['Idempotency-Key']) {
@@ -602,12 +679,27 @@
           ? crypto.randomUUID()
           : `idemp-${Date.now()}-${Math.random().toString(36).slice(2)}`);
       }
-      const response = await fetch(`${API_BASE}${path}`, { ...options, method, headers });
+      let response = await fetch(`${API_BASE}${path}`, { ...options, method, headers, credentials: 'same-origin' });
+      if (response.status === 401 && authState.access) {
+        const refreshed = await refreshToken();
+        if (refreshed) {
+          headers.Authorization = `Bearer ${authState.access}`;
+          response = await fetch(`${API_BASE}${path}`, { ...options, method, headers, credentials: 'same-origin' });
+        } else {
+          requireLogin();
+        }
+      }
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body.detail || `请求失败 (${response.status})`);
       }
-      return response.json();
+      const body = await response.json().catch(() => ({}));
+      // formal_research_api returns run_id on creation; the rest of the
+      // frontend expects task.id. Normalise both shapes here.
+      if (body && typeof body === 'object' && !('id' in body) && 'run_id' in body) {
+        body.id = body.run_id;
+      }
+      return body;
     }
     
     function appendLog(event) {
@@ -822,8 +914,10 @@
     }
 
     function renderReport(task) {
-      const report = task.report || task.result;
-      if (!report) return;
+      // formal_app stores the report payload inside task.report.report;
+      // the SQLite prototype used task.result. Normalise both.
+      const report = (task.report && task.report.report) || task.report || task.result || {};
+      if (!report || typeof report !== 'object') return;
       resetStreamingDraft();
       const evidenceItems = (task.evidence && task.evidence.length) ? task.evidence
         : (runtime.evidence && runtime.evidence.length) ? runtime.evidence : [];
@@ -1125,66 +1219,93 @@
       runtime.stream = null;
     }
     
-    function openStream(taskId) {
-      // backend/app.py exposes GET /api/research/{id}/events as an SSE stream
-      // that emits every persisted run event: tool trace rows, report.delta
-      // chunks, state transitions, and the terminal completion event.
-      closeStream();
-      if (typeof EventSource === 'undefined') {
-        // Old browser fallback — degrade to polling so the UI still updates.
-        pollRunStatus(taskId);
-        return;
+    function handleStreamEvent(taskId, event) {
+      // 1) Trace row for every event with a message.
+      if (event.message) appendLog(event);
+      // 2) Streaming report delta (controlled-tools currently emits none, but
+      //     keep the hook for the DeepSeek prototype).
+      if (event.kind === 'report.delta' && event.payload && typeof event.payload.delta === 'string') {
+        appendReportDelta(event.payload.delta);
       }
-      const url = `${API_BASE}/research/${encodeURIComponent(taskId)}/events`;
-      const source = new EventSource(url, { withCredentials: false });
-      let lastEventId = 0;
-      const onProgress = (ev) => {
-        let payload = {};
-        try { payload = JSON.parse(ev.data); } catch (_) { payload = {}; }
-        const event = Object.assign({ id: Number(ev.lastEventId || payload.id || 0) }, payload);
-        if (event.id && event.id <= lastEventId) return;
-        if (event.id) lastEventId = event.id;
-        // 1) Trace row for every event with a message.
-        if (event.message) appendLog(event);
-        // 2) Streaming report delta.
-        if (event.kind === 'report.delta' && event.payload && typeof event.payload.delta === 'string') {
-          appendReportDelta(event.payload.delta);
-        }
-        // 3) State transition + progress: reflect into the status / chip / buttons.
-        if (event.status || typeof event.progress === 'number') {
-          applyTask({
-            id: taskId,
-            status: event.status || runtime.taskStatus,
-            progress: typeof event.progress === 'number' ? event.progress : runtime.taskStatus ? null : 0,
-            company: runtime.company,
-            symbol: runtime.symbol,
-            market: runtime.market,
-            question: runtime.question,
-            depth: runtime.depth,
-            created_at: runtime.startedAt ? new Date(runtime.startedAt).toISOString() : undefined,
-            updated_at: event.created_at,
-            evidence: runtime.evidence,
-          });
-        }
-        // 4) Terminal — close the stream and fetch the final report.
-        const status = String(event.status || '').toLowerCase();
-        if (TERMINAL.has(status)) {
-          source.close();
-          runtime.stream = null;
-          finalizeStream(taskId, status);
-        }
+      // 3) State transition + progress: reflect into the status / chip / buttons.
+      if (event.status || typeof event.progress === 'number') {
+        applyTask({
+          id: taskId,
+          status: event.status || runtime.taskStatus,
+          progress: typeof event.progress === 'number' ? event.progress : runtime.taskStatus ? null : 0,
+          company: runtime.company,
+          symbol: runtime.symbol,
+          market: runtime.market,
+          question: runtime.question,
+          depth: runtime.depth,
+          created_at: runtime.startedAt ? new Date(runtime.startedAt).toISOString() : undefined,
+          updated_at: event.created_at,
+          evidence: runtime.evidence,
+        });
+      }
+      // 4) Terminal — close the stream and fetch the final report.
+      const status = String(event.status || '').toLowerCase();
+      if (TERMINAL.has(status)) {
+        runtime.stream?.close?.();
+        runtime.stream = null;
+        finalizeStream(taskId, status);
+      }
+    }
+
+    async function openStream(taskId) {
+      // formal_app SSE requires the Authorization header, so we consume the
+      // event stream with fetch + ReadableStream instead of EventSource.
+      closeStream();
+      const controller = new AbortController();
+      runtime.stream = {
+        close: () => { controller.abort(); },
+        source: null,
       };
-      source.addEventListener('progress', onProgress);
-      source.addEventListener('error', () => {
-        // EventSource auto-reconnects on transient errors; only fall back to
-        // polling when the server has clearly given up (readyState === CLOSED).
-        if (source.readyState === EventSource.CLOSED) {
-          source.close();
-          runtime.stream = null;
-          pollRunStatus(taskId);
+      let stopped = false;
+      try {
+        const response = await fetch(`${API_BASE}/research/${encodeURIComponent(taskId)}/events`, {
+          headers: { Authorization: `Bearer ${authState.access}` },
+          credentials: 'same-origin',
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.detail || `事件流请求失败 (${response.status})`);
         }
-      });
-      runtime.stream = source;
+        if (!response.body) { pollRunStatus(taskId); return; }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (!stopped) {
+          let value;
+          try {
+            const result = await reader.read();
+            if (result.done) break;
+            value = result.value;
+          } catch (error) {
+            if (controller.signal.aborted) break;
+            throw error;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          let sep;
+          while ((sep = buffer.indexOf('\n\n')) !== -1) {
+            const raw = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            for (const line of raw.split('\n')) {
+              if (!line.startsWith('data: ')) continue;
+              try {
+                const event = JSON.parse(line.slice(6));
+                handleStreamEvent(taskId, event);
+              } catch (_) { /* skip malformed event */ }
+            }
+          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        // Fall back to polling on any stream failure.
+        runtime.stream = null;
+        pollRunStatus(taskId);
+      }
     }
 
     async function pollRunStatus(taskId) {
@@ -1540,6 +1661,28 @@
         if (cite) positionCite(cite);
       }, true);
     })();
+
+    document.getElementById('login-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const err = document.getElementById('login-error');
+      err.textContent = '';
+      try {
+        await login(
+          document.getElementById('tenant-id').value.trim(),
+          document.getElementById('email').value.trim(),
+          document.getElementById('password').value,
+        );
+        hideLogin();
+        await bootstrap();
+      } catch (error) {
+        err.textContent = error.message;
+      }
+    });
+
+    // If we already have a token, skip login and boot; otherwise show login.
+    if (!authState.access) {
+      requireLogin();
+    }
 
     bootstrap();
     
