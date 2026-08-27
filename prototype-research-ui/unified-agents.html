@@ -1765,12 +1765,16 @@
       }
     });
 
-    // If we already have a token, skip login and boot; otherwise show login.
-    if (!authState.access) {
-      requireLogin();
-    }
-
-    bootstrap();
+    // If we already have a token, hide login and boot; otherwise try the
+    // HTTP-only refresh cookie so returning users don't have to log in again.
+    (async () => {
+      if (authState.access || await refreshToken()) {
+        hideLogin();
+      } else {
+        requireLogin();
+      }
+      bootstrap();
+    })();
     
   </script>
 </body>
