@@ -824,6 +824,30 @@
       return body;
     }
     
+
+    function traceMessageForEvent(event) {
+      const kind = String(event.kind || event.event_type || '');
+      const payload = event.payload || {};
+      const stepLabels = {
+        search_filings: '检索官方公告与披露',
+        get_quote: '获取实时行情',
+        fetch_prices: '拉取历史股价 K 线',
+        fetch_statements: '获取财务指标',
+        retrieve_documents: '检索文档资料',
+        extract_facts: '提取财务事实',
+        calculate_metrics: '计算财务指标',
+        synthesize_verified_report: '生成研究报告',
+      };
+      if (kind === 'step.completed' && payload.step_id && stepLabels[payload.step_id]) {
+        return stepLabels[payload.step_id];
+      }
+      if (kind === 'run.running') return '研究任务已创建，等待 Agent 启动';
+      if (kind === 'run.lease_acquired') return 'Agent 已接管任务';
+      if (kind === 'run.completed') return '研究完成';
+      if (kind === 'run.failed') return '研究失败';
+      return '';
+    }
+
     function appendLog(event) {
       if (event.id && runtime.eventIds.has(event.id)) return;
       if (event.id) runtime.eventIds.add(event.id);
@@ -1361,6 +1385,7 @@
     
     function handleStreamEvent(taskId, event) {
       // 1) Trace row for every event with a message.
+      if (!event.message) event.message = traceMessageForEvent(event);
       if (event.message) appendLog(event);
       // 2) Streaming report delta (controlled-tools currently emits none, but
       //     keep the hook for the DeepSeek prototype).
