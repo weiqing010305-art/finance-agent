@@ -1384,6 +1384,12 @@
     }
     
     function handleStreamEvent(taskId, event) {
+      // Persisted terminal events carry no status in their payload; normalise
+      // them so the UI can finish immediately instead of waiting for the SSE
+      // idle terminal marker.
+      if (event.kind === 'run.completed') event.status = 'completed';
+      if (event.kind === 'run.failed') event.status = 'failed';
+
       // 1) Trace row for every event with a message.
       if (!event.message) event.message = traceMessageForEvent(event);
       if (event.message) appendLog(event);
