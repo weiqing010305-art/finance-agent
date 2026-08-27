@@ -1421,6 +1421,7 @@
       // formal_app SSE requires the Authorization header, so we consume the
       // event stream with fetch + ReadableStream instead of EventSource.
       closeStream();
+      const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
       const controller = new AbortController();
       runtime.stream = {
         close: () => { controller.abort(); },
@@ -1461,6 +1462,9 @@
               try {
                 const event = JSON.parse(line.slice(6));
                 handleStreamEvent(taskId, event);
+                // Space out trace rows so the agent work appears as a live
+                // stream instead of a burst of all historical events at once.
+                await sleep(160);
               } catch (_) { /* skip malformed event */ }
             }
           }
