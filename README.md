@@ -102,6 +102,23 @@ FinScope 是一个面向个人研究者的深度研究（Deep Research）Agent�
 - `renderReport` 检测报告的 `financial_metrics` 字段后，在报告正文顶部渲染「财务指标摘要」表格（指标 / 数值 / 报告期）。
 - 受控工具报告的真实 A 股数据直接在案卷控制台可见，而不只藏在证据抽屉里。
 
+### 股价 K 线图（ECharts）
+- 引入 ECharts 5（本地 `prototype-research-ui/echarts.min.js`，离线可用）。
+- 报告 `price_bars` 字段携带完整 OHLCV（AkShare 日线来源）；前端用 `candlestick` + `bar` 双 grid 渲染蜡烛图与成交量副图。
+- 设计参考了 k-line-replay 项目的实现（蜡烛图样式、grid 布局、涨跌色），但**不包含**回放、模拟交易、指标计算——FinScope 只做展示，不做训练/回测。
+
+### 港股 / 美股财报（AkShare 优先）
+- 引入 `backend/akshare_source.py`，把 A/H/US 日线与财报统一接到一个免费、无需 token 的数据源（替代了 Tushare Pro 这一被 token 权限卡住的方案）。
+- A 股日线：`ak.stock_zh_a_daily`（新浪源）；港股日线：`ak.stock_hk_daily`（腾讯源）；美股日线：`ak.stock_us_daily`。
+- 港股 / 美股财报：`ak.stock_financial_hk_analysis_indicator_em` / `us_analysis_indicator_em`（东方财富）。
+- 实测：腾讯（00700.HK）最新报告期 9 期财务（营收 7517 亿、ROE 21.13%）；A 股茅台（600519）报告含 138 条财务指标 + 30 根 K 线。
+
+### 前端统一 + 后端切到 PostgreSQL
+- 唯一前端：`unified-agents.html`（案卷控制台）。`formal-console.html` / `invitation.html` 等杂志风原型页删除。
+- 后端：`compose.yaml` 与 `Dockerfile` 切换 `api` 服务到 `backend.formal_app:create_formal_app`（PostgreSQL 版），研究数据进入 RLS 多租户的持久化存储。
+- 前端补全鉴权（登录页 + api() 自动带 Bearer + SSE fetch 流式支持 Authorization header）+ 字段归一（`run_id` → `id`、`task.report.report` 内层读取、case 字段兼容 `latest_task_id/latest_status/title`）+ 缺失路由补齐（`/api/securities`、`/api/cases`、SSE `/events`、`/evidence/enrich`、`/feedback`、`DELETE`、`PATCH`）。
+- 测试：558 通过 / 5 跳过 / 0 失败。
+
 ## 架构总览
 
 FinScope 采用**模块化单体**（modular monolith）架构：一份代码、一组模块，通过 PostgreSQL 事务边界和 RLS 实现多租户隔离。模型服务只承担推理，联网搜索、来源筛选、证据关系都由产品代码控制。
@@ -156,19 +173,42 @@ FinScope 采用**模块化单体**（modular monolith）架构：一份代码、
 
 ## 快速开始
 
-项目有两套可运行的形态，用途不同：
+**单一前端 + PostgreSQL 后端**：项目当前只有一种运行形态——Docker Compose 全栈（Postgres + Redis + MinIO + Dramatiq + Caddy + Milvus），前端入口是 `prototype-research-ui/unified-agents.html`（案卷控制台）。`backend/app.py` 的 SQLite 旧原型仍保留在仓库，但**已不在产品路径**。
 
-### A. 生产形态部署（Docker Compose，推荐用于验证架构）
+### Docker Compose 全栈启动
 
-前置：Docker Desktop（Linux 引擎）、PowerShell、仓库的 Python 虚拟环境。
+前置：Docker Desktop（Linux 引擎）、仓库的 Python 虚拟环境、`secrets/` 目录里已有本地开发凭据（或运行 `scripts/local.ps1 init` 生成）。
 
 ```powershell
-.\scripts\local.ps1 init
+# 启动全栈（默认 executor = synthetic_smoke）
 .\scripts\local.ps1 up
+
+# 启动 controlled_tools executor（A 股真实财报 + AkShare 股价）
+$env:FINSCOPE_FORMAL_EXECUTOR = "controlled_tools"
+.\scripts\local.ps1 up
+
+# 初始化 owner / tenant（首次，或 wipe 数据卷后）
 .\scripts\local.ps1 bootstrap -Email owner@example.com -TenantName "FinScope Local"
 ```
 
-`bootstrap` 会提示设置密码并打印生成的租户 ID。打开 `https://localhost:8443/`（接受 Caddy 的本地证书告警），用租户 ID + 邮箱 + 密码登录。Mailpit 邮件预览在 `http://127.0.0.1:8025/`。
+打开浏览器访问 `https://localhost:8443/`（接受 Caddy 的本地证书告警）。首页会自动跳转到统一前端 `unified-agents.html`。
+
+### 登录
+
+`unified-agents.html` 是受控研究台，需要登录后使用。登录凭据：
+
+- **Tenant ID**：从 `bootstrap` 命令的输出或 `scripts/local.ps1 bootstrap` 的结果中获取。
+- **Email**：创建时指定的邮箱（如 `owner@example.com`）。
+- **Password**：创建时输入的密码。若忘记，可以在 Postgres 容器里重置密码哈希：
+
+```powershell
+# 在 api 容器内用 argon2 生成新哈希并写入 DB
+docker exec -it finscope-local-api-1 python3 -c "
+from backend.auth.passwords import hash_password
+print(hash_password('YourNewPassword'))"
+# 然后
+docker exec -it finscope-local-postgres-1 psql -U finscope_admin -d finscope   -c "UPDATE users SET password_hash = '<hash>' WHERE email = 'owner@example.com';"
+```
 
 常用命令：
 
@@ -179,38 +219,21 @@ FinScope 采用**模块化单体**（modular monolith）架构：一份代码、
 .\scripts\local.ps1 down     # 停止（保留数据卷）
 ```
 
-运行真实 RAG 演示（首次会下载固定的 BGE 模型到持久化卷）：
+### 启用真实 LLM 综合报告（可选）
 
-```powershell
-.\scripts\local.ps1 up-rag
-.\scripts\local.ps1 seed-rag -TenantId <tenant-id> -UserId <user-id>
+综合报告（`backend/synthesizer.py`）默认走 deterministic 路径。要启用 DeepSeek LLM 综合：
+
+```env
+# backend/.env
+DEEPSEEK_API_KEY=sk-your-key
 ```
 
-### B. 旧原型：DeepSeek 联网搜索（真实 Deep Research）
+重启 worker 后再创建研究任务，新任务的报告就会通过 DeepSeek 综合生成（更自然、可读）。
 
-旧版 FastAPI 原型（`backend/app.py`）支持通过 DeepSeek Responses API 的 `web_search` 工具做**真实联网搜索**，能端到端跑通「搜索 → 阅读 → 分析 → 生成带引用报告」的完整链路。这是迁移期能力（模型直连搜索，尚未走受控 Tool Registry），但已经实测可用。
+### 已废弃的形态
 
-在 `backend/.env` 中配置（该文件已被 gitignore，不会上传）：
-
-```
-FINSCOPE_RESEARCH_MODE=deepseek
-DEEPSEEK_API_KEY=sk-你的key
-DEEPSEEK_MODEL=deepseek-v4-flash
-```
-
-一条命令验证整条链路：
-
-```powershell
-.\.venv\Scripts\python.exe -m scripts.verify_deepseek_research
-```
-
-或启动原型 API（端口 8780）后，用浏览器直接打开 `prototype-research-ui/unified-agents.html`：
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn backend.app:app --port 8780
-```
-
-> 前端以 file:// 方式打开（origin 为 `null`）才能通过 CORS 连接本地 API。
+- **SQLite 旧原型（`backend/app.py`）**：当前未在任何路径使用，已不推荐启动。若需调试，单独跑 `uvicorn backend.app:app --port 8780`。
+- **`formal-console.html` / `invitation.html` 等杂志风前端**：已删除，不再是产品前端。
 
 ## 运行时 Profile（Docker Compose）
 
@@ -261,7 +284,7 @@ finance agent/
 
 ## 测试与验证
 
-- 全量 pytest：**554 通过、5 跳过**（跳过项为需要真实 Milvus/BGE 环境的外部集成门；无失败）。
+- 全量 pytest：**558 通过、5 跳过**（跳过项为需要真实 Milvus/BGE 环境的外部集成门；无失败）。
 - 测试覆盖：持久化 Runner 契约、RLS 租户隔离、证据/引用链完整性、迁移契约、幂等重放、跨租户隔离、备份恢复等。
 - 离线评测：Phase 3/4/5 的意图路由、RAG、记忆评测用例均可离线运行。Phase 4 的证据核验评测已去自证化：在混合质量输入（支持/伪造数字/无证据/冲突并存）上断言「质量属性恒真」（伪造全捕获、无误报、冲突必披露），同时 `supported_rate` 等诚实指标反映真实输入分布、允许小于 1.0——任何把「恒等于 1.0」当成绩的回归都会被抓住。
 
@@ -271,16 +294,22 @@ finance agent/
 
 ## 当前状态与边界
 
-**已经做到**：完整的持久化研究 Agent 骨架，生产级的多租户隔离与部署，真实的中文混合检索（Milvus + BGE），以及实测可用的 DeepSeek 联网搜索链路。
+**已经做到（单一产品形态）**：
+
+- **统一前端 `prototype-research-ui/unified-agents.html`**：案卷控制台（左侧案卷导航 + 中间任务报告 + 搜索抽屉 + 底部输入框），是项目当前唯一的前端入口；登录鉴权（tenant + email + password → JWT）、SSE 流式输出（fetch + ReadableStream，支持 Bearer）、ECharts K 线 + 成交量图表（本地 `echarts.min.js`）、结构化报告（公司概览 / 股价表现 / 财务摘要 / 财务分析 / 证据来源）。
+- **PostgreSQL 后端（formal_app）**：行级安全（RLS）、邀请制认证、Alembic 迁移（14 个版本）、Dramatiq 持久化 worker、Caddy 反代、Milvus 混合检索；研究链路（fetch_financial_statements + fetch_stock_prices + extract_financial_facts + calculate_financial_metrics）已在 Docker 全栈端到端跑通（A 股实测 138 条 financial_metrics + 30 根 K 线，**贵州茅台报告：最新收盘价 ¥1292.3、ROE 16.75%、毛利率 89.6%、资产负债率 15.2%**，全部数据为真）。
+- **单一「公司分析 Agent」**：原 PRODUCT.md 里规划的三个 Agent（财报 / 市场 / 公司研究）已合并为一条 controlled_tools DAG；单次运行同时产出**股价 + 财报 + 公告 + 分析**。多 Agent 并行已确认**不做**（PRODUCT.md 要求"必须由固定评测证明收益后启用"，当前单 Agent 多工具路径已能满足产品需求且更快、更稳）。
+- **数据源按需降级**：
+  - A 股：东方财富 F10（`RPT_F10_FINANCE_MAINFINADATA`，36 字段，无需 key）+ 巨潮公告（无需 key）+ 腾讯行情（无需 key）。
+  - 港股 / 美股：**AkShare** 优先（`stock_zh_a_daily` / `stock_hk_daily` / `stock_us_daily` 日线 + `stock_financial_hk/us_analysis_indicator_em` 财报，全部无需 key）。Tushare Pro（需 token）作为降级兜底，但实际从未启用（token 无权限）。
+  - 全部失败时显式 `degraded=True, fallback_used="filings_search"`，**不伪造数字**。
 
 **仍未做到（诚实声明）**：
 
-- **formal 生产路径仍是合成 fixture**：`real_rag_local` 跑的是真实 BGE 向量 + Milvus 检索，但语料是带标签的本地演示数据，**不调用实时金融源、也不调用 LLM**，因此不构成真实投资研究。
-- **旧原型 DeepSeek 联网搜索是迁移期能力**：模型直连搜索，尚未接入受控 Tool Registry（长期架构要求「模型只能通过受控只读工具检索」）。
-- **受控工具已全部接线为真实实现（能力取决于运行时配置）**：`search_web` 通过 DeepSeek Responses 的 `web_search` 执行（需 `DEEPSEEK_API_KEY`，未配置时显式降级）；`search_filings` 对 A 股公司**直连巨潮资讯公告 API**（官方披露平台、无需 key、返回结构化公告），港股或巨潮失败时降级为官方域名白名单网页搜索（`degraded` + `fallback_used=web_search` 显式标记）；`get_quote` 直连腾讯免费行情（A 股/港股/美股，GBK 字段解析为确定性数值：现价、涨跌、PE/PB、市值等），且已由 Planner 纳入研究计划（与财报检索并行执行，实测返回真实行情）；`read_document` 从持久化文档库读取分节内容（需注入 repository，默认降级）；`extract_financial_facts` 用确定性规则从文本抽取带期间/单位/来源的财务事实；`calculate_financial_metrics` 用纯 Python 公式计算指标并回链输入科目；`retrieve_documents` 接入真实 Milvus 混合检索。所有工具在缺输入/缺配置时返回显式 `degraded`，不静默伪造结果。
-- **数据源**：A 股免费源（巨潮公告、腾讯行情、东方财富 F10 财务摘要）按失败降级处理；港股 / 美股默认降级，但可通过设置 `TUSHARE_TOKEN` 启用 **Tushare Pro**（`stock_hk_*` / `us_*`）真实财务 —— 见 `backend/tushare_source.py`。冒烟脚本：`scripts\verify_filings_source.py` / `scripts\verify_quote.py` / `scripts\verify_financial_statements.py`。
-- **真实 PostgreSQL 集成门默认跳过**：`tests\test_postgres_real_integration.py` 在真实 PG 上执行 Alembic 迁移并验证 RLS 租户隔离（SQLite 契约测试无法覆盖），需设置 `FINSCOPE_TEST_PG_URL`（测试文件头部有一次性容器启动命令）；本机已用 Docker 一次性容器实测通过。
-- 前端仍是 HTML 原型，正式 API 的用户可见界面（`/api/securities` 别名词典、参考文献端点、双账号隔离演示、SSE 流式渲染、左侧公司实时匹配）已补齐；多 Agent 并行尚未启用。
+- **LLM 综合报告未启用**：合成 deterministic reporter 在没有 `DEEPSEEK_API_KEY` 时产出结构化报告骨架；DeepSeek citation-constrained synthesis 代码已就位（`backend/synthesizer.py`，6 个单测覆盖），但容器目前未注入 API key，所以走 deterministic 路径。若需要真正的 LLM 综合，在 `.env` 设 `DEEPSEEK_API_KEY` 并重启 worker 即可启用。
+- **LLM 工具 `search_web` 未启用**：DeepSeek Responses `web_search` 集成已存在（`backend/web_search.py`），需要 `DEEPSEEK_API_KEY` + 配置；未启用时降级到 `search_filings`。
+- **真实 PostgreSQL 集成门默认跳过**：`tests	est_postgres_real_integration.py` 在真实 PG 上执行 Alembic 迁移并验证 RLS 租户隔离（SQLite 契约测试无法覆盖），需设置 `FINSCOPE_TEST_PG_URL`；本机已用 Docker 一次性容器实测通过。
+- **CSP 含 `'unsafe-inline'`（已知安全债）**：unified-agents.html 是内联脚本原型，Caddyfile 因此放行了 `'unsafe-inline'`；未来若把 CSS/JS 拆成外部文件，应收紧回 `'self'`。
 
 ## 架构文档索引
 
