@@ -52,11 +52,12 @@
     .brand-copy span{display:block;margin-top:2px;color:var(--muted);font-size:12px}
     .new-case{width:100%;min-height:44px;border:0;border-radius:10px;background:var(--pine);color:#fff;font-weight:700;box-shadow:0 8px 18px rgba(20,90,70,.16)}
     .rail-label{margin:24px 8px 9px;color:var(--muted);font-size:12px;font-weight:600}
-    .case-list{display:grid;gap:5px;position:relative;flex:1 1 0;min-height:0;max-height:calc(100vh - 230px);overflow-y:auto;overscroll-behavior:contain;align-content:start;padding:2px 6px 10px 0;scrollbar-width:thin;scrollbar-gutter:stable}
-    .case-list::-webkit-scrollbar{width:8px}
-    .case-list::-webkit-scrollbar-thumb{background:rgba(20,90,70,.22);border-radius:8px}
-    .case-list::-webkit-scrollbar-thumb:hover{background:rgba(20,90,70,.34)}
-    .case-list::-webkit-scrollbar-track{background:transparent}
+    .case-list{display:grid;gap:5px;position:relative;flex:1 1 0;min-height:0;max-height:calc(100vh - 230px);overflow-y:auto;overscroll-behavior:contain;align-content:start;padding:2px 6px 10px 0;scrollbar-width:thin;scrollbar-color:#b7c6be #eef3ef;scrollbar-gutter:stable}
+    .case-list::-webkit-scrollbar{width:10px}
+    .case-list::-webkit-scrollbar-thumb{background:#b7c6be;border:2px solid #eef3ef;border-radius:8px}
+    .case-list::-webkit-scrollbar-thumb:hover{background:#8fa89b}
+    .case-list::-webkit-scrollbar-track{background:#eef3ef;border-radius:8px}
+    .case-list::-webkit-scrollbar-button{display:none}
     .case-item{position:relative;display:flex;align-items:stretch;border-radius:9px}
     .case-item.selected{background:rgba(255,255,255,.82)}
     .case{flex:1;min-width:0;border:0;border-radius:9px;background:transparent;padding:10px 6px 10px 10px;text-align:left;color:var(--text);position:relative}
