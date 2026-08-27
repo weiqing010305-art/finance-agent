@@ -277,7 +277,7 @@ finance agent/
 │   ├── evidence.py          # 证据构建
 │   ├── verifier.py          # 结论核验
 │   └── ...                  # planner、retrieval、memory、redaction 等
-├── alembic/                 # 数据库迁移（15 个版本，0001–0015）
+├── alembic/                 # 数据库迁移（16 个版本，0001–0016）
 ├── docs/                    # 设计 / 计划 / 验证 / ADR 决策文档
 ├── evals/                   # 评测用例与打分器
 ├── infra/                   # Caddy / Grafana / Loki / OTel / Prometheus / PG 配置
@@ -301,7 +301,7 @@ finance agent/
 **已经做到（单一产品形态）**：
 
 - **统一前端 `prototype-research-ui/unified-agents.html`**：案卷控制台（左侧案卷导航 + 中间任务报告 + 搜索抽屉 + 底部输入框），是项目当前唯一的前端入口；登录鉴权（tenant + email + password → JWT）、SSE 流式输出（fetch + ReadableStream，支持 Bearer）、ECharts K 线 + 成交量图表（本地 `echarts.min.js`）、结构化报告（公司概览 / 股价表现 / 财务摘要 / 财务分析 / 证据来源）。
-- **PostgreSQL 后端（formal_app）**：行级安全（RLS）、邀请制认证、Alembic 迁移（15 个版本）、Dramatiq 持久化 worker、Caddy 反代、Milvus 混合检索；研究链路（fetch_financial_statements + fetch_stock_prices + extract_financial_facts + calculate_financial_metrics）已在 Docker 全栈端到端跑通（A 股实测 138 条 financial_metrics + 30 根 K 线，**贵州茅台报告：最新收盘价 ¥1292.3、ROE 16.75%、毛利率 89.6%、资产负债率 15.2%**，全部数据为真）。
+- **PostgreSQL 后端（formal_app）**：行级安全（RLS）、邀请制认证、Alembic 迁移（16 个版本）、Dramatiq 持久化 worker、Caddy 反代、Milvus 混合检索；研究链路（fetch_financial_statements + fetch_stock_prices + extract_financial_facts + calculate_financial_metrics）已在 Docker 全栈端到端跑通（A 股实测 138 条 financial_metrics + 30 根 K 线，**贵州茅台报告：最新收盘价 ¥1292.3、ROE 16.75%、毛利率 89.6%、资产负债率 15.2%**，全部数据为真）。
 - **单一「公司分析 Agent」**：原 PRODUCT.md 里规划的三个 Agent（财报 / 市场 / 公司研究）已合并为一条 controlled_tools DAG；单次运行同时产出**股价 + 财报 + 公告 + 分析**。多 Agent 并行已确认**不做**（PRODUCT.md 要求"必须由固定评测证明收益后启用"，当前单 Agent 多工具路径已能满足产品需求且更快、更稳）。
 - **数据源按需降级**：
   - A 股：东方财富 F10（`RPT_F10_FINANCE_MAINFINADATA`，36 字段，无需 key）+ 巨潮公告（无需 key）+ 腾讯行情（无需 key）。
