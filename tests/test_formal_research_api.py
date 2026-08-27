@@ -58,6 +58,24 @@ def test_formal_research_create_is_atomic_dispatched_and_idempotent():
     assert viewed.status_code == 200 and viewed.json()["company"] == "腾讯控股"
 
 
+def test_formal_research_auto_resolves_known_company():
+    client, sent = _app()
+    response = client.post("/api/research", json={
+        "company": "自动识别中", "symbol": "", "market": "AUTO",
+        "question": "分析腾讯控股现金流质量", "depth": "quick", "budget_limit": 20,
+    }, headers={"Idempotency-Key": "formal-auto-resolve-0001"})
+    assert response.status_code == 202
+    body = response.json()
+    assert body["execution_profile"] == "synthetic_smoke"
+    assert sent == [body["run_id"]]
+    viewed = client.get(f"/api/research/{body['run_id']}")
+    assert viewed.status_code == 200
+    assert viewed.json()["company"] == "腾讯控股"
+    assert viewed.json()["symbol"] == "0700.HK"
+    assert viewed.json()["market"] == "HK"
+
+
+
 def test_broker_failure_keeps_transactional_outbox_pending():
     def fail(_job_id):
         raise ConnectionError("redis down")

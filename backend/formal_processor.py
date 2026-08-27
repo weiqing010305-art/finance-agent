@@ -482,12 +482,31 @@ class ControlledToolsResearchProcessor:
                     "authority_tier": int(item.get("authority_tier") or 0),
                     "step_id": step_id,
                 }
+                if step_id == "get_quote" and not identity["excerpt"] and item.get("price") is not None:
+                    name = item.get("name") or "行情"
+                    value = item.get("price")
+                    unit = item.get("unit") or "元"
+                    identity["excerpt"] = f"{name} 现价 {value}{unit}".strip()
+                if step_id == "get_quote":
+                    identity["period"] = str(
+                        item.get("period") or item.get("time") or item.get("date") or ""
+                    )[:10]
+                if not identity["source_uri"]:
+                    identity["source_uri"] = redact_url(
+                        output.get("source_url") or
+                        ((output.get("evidence") or [{}])[0] or {}).get("url") or ""
+                    )
+                if not identity["source_uri"] and step_id == "get_quote":
+                    symbol = str(item.get("symbol") or "").lower()
+                    identity["source_uri"] = (
+                        f"https://qt.gtimg.cn/q={symbol}" if symbol else "https://qt.gtimg.cn/"
+                    )
                 if step_id == "fetch_statements":
                     identity["metric_key"] = str(item.get("name") or "")
                     identity["period"] = str(item.get("period") or "")
                     identity["unit"] = str(item.get("unit") or "")
                     identity["value"] = item.get("value")
-                if not identity["excerpt"] or not identity["source_uri"]:
+                if not identity["excerpt"]:
                     continue
                 evidence.append(identity)
                 # Map the tool's structured data to a claim when it carries
@@ -514,10 +533,13 @@ class ControlledToolsResearchProcessor:
         return None
 
     def _item_to_claim(self, run_id, step_id, item, evidence_id):
+        period = item.get("period") or ""
+        unit = item.get("unit") or ""
         if step_id == "get_quote":
             name = item.get("name") or "行情"
             value = item.get("price")
-            unit = item.get("unit") or ""
+            unit = item.get("unit") or "元"
+            period = item.get("period") or str(item.get("time") or item.get("date") or "")[:10]
             text = f"{name} 现价 {value}{unit}".strip()
         elif step_id == "calculate_metrics":
             name = item.get("name")
@@ -548,8 +570,8 @@ class ControlledToolsResearchProcessor:
         claim_id = f"ct-claim-{evidence_id}"
         return {"id": claim_id, "text": text, "status": "supported", "confidence": 0.9,
                 "evidence_ids": [evidence_id],
-                "period": item.get("period") or "",
-                "unit": item.get("unit") or "",
+                "period": period,
+                "unit": unit,
                 "currency": item.get("currency") or ""}
 
     # ------------------------------------------------------------------ main

@@ -44,8 +44,8 @@ def _profile_available(persisted: str, configured: str) -> bool:
 class FormalResearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     company: str = Field(min_length=1, max_length=120)
-    symbol: str = Field(min_length=1, max_length=32)
-    market: Literal["CN", "HK", "US", "OTHER"]
+    symbol: str = Field(default="", min_length=0, max_length=32)
+    market: Literal["CN", "HK", "US", "OTHER", "AUTO"] = "AUTO"
     question: str = Field(min_length=5, max_length=2_000)
     depth: Literal["quick", "standard", "deep"] = "standard"
     budget_limit: int = Field(default=20, ge=1, le=10_000)
@@ -78,11 +78,21 @@ def build_formal_research_router(
         idempotency_key: str = Header(min_length=8, max_length=128, alias="Idempotency-Key"),
         principal: PrincipalContext = Depends(can_create),
     ) -> dict:
-        entity = SecurityCandidate(
-            candidate_id=f"explicit:{payload.market}:{payload.symbol}", company=payload.company,
-            symbol=payload.symbol, market=payload.market, confidence=1.0,
-            matched_alias=payload.company,
-        )
+        entity: SecurityCandidate
+        if payload.market == "AUTO" or not payload.symbol:
+            from backend.entity_resolver import EntityResolver
+            resolution = EntityResolver().resolve(payload.question)
+            if resolution.status != "resolved" or resolution.selected is None:
+                detail = f"无法自动识别公司（{resolution.status}），请提供明确的公司名称或股票代码"
+                raise HTTPException(status_code=422, detail=detail)
+            entity = resolution.selected
+        else:
+            entity = SecurityCandidate(
+                candidate_id=f"explicit:{payload.market}:{payload.symbol}", company=payload.company,
+                symbol=payload.symbol, market=payload.market, confidence=1.0,
+                matched_alias=payload.company,
+            )
+        company, symbol, market = entity.company, entity.symbol, entity.market
         try:
             if execution_profile == "synthetic_smoke":
                 planned = planner.create_plan(
@@ -91,6 +101,7 @@ def build_formal_research_router(
                 )
                 plan = {
                     "version": 1, "goal": payload.question,
+                    "entity": entity.model_dump(mode="json"),
                     "steps": [{
                         "id": "synthetic_smoke_gate", "kind": "synthesis",
                         "tool_name": "synthetic_smoke", "dependencies": [],
@@ -112,36 +123,36 @@ def build_formal_research_router(
                         {
                             "id": "search_filings", "kind": "tool",
                             "tool_name": "search_filings", "dependencies": [],
-                            "input": {"company": payload.company, "symbol": payload.symbol,
-                                      "market": payload.market, "document_types": ["annual_report"]},
+                            "input": {"company": company, "symbol": symbol,
+                                      "market": market, "document_types": ["annual_report"]},
                             "success_criteria": ["find at least one official filing"],
                             "max_attempts": 1, "estimated_cost": 2,
                         },
                         {
                             "id": "get_quote", "kind": "tool",
                             "tool_name": "get_quote", "dependencies": [],
-                            "input": {"symbol": payload.symbol, "market": payload.market},
+                            "input": {"symbol": symbol, "market": market},
                             "success_criteria": ["fetch one deterministic quote"],
                             "max_attempts": 1, "estimated_cost": 1,
                         },
                         {
                             "id": "fetch_prices", "kind": "tool",
                             "tool_name": "fetch_stock_prices", "dependencies": [],
-                            "input": {"symbol": payload.symbol, "market": payload.market, "periods": 30},
+                            "input": {"symbol": symbol, "market": market, "periods": 30},
                             "success_criteria": ["fetch recent daily price bars or degrade to quote"],
                             "max_attempts": 1, "estimated_cost": 1,
                         },
                         {
                             "id": "fetch_statements", "kind": "tool",
                             "tool_name": "fetch_financial_statements", "dependencies": [],
-                            "input": {"symbol": payload.symbol, "market": payload.market, "periods": 4},
+                            "input": {"symbol": symbol, "market": market, "periods": 4},
                             "success_criteria": ["fetch headline financial metrics or degrade to filings"],
                             "max_attempts": 1, "estimated_cost": 2,
                         },
                         {
                             "id": "retrieve_documents", "kind": "tool",
                             "tool_name": "retrieve_documents", "dependencies": [],
-                            "input": {"company": payload.company, "question": payload.question, "top_k": 5},
+                            "input": {"company": company, "question": payload.question, "top_k": 5},
                             "success_criteria": ["retrieve traceable document chunks"],
                             "max_attempts": 1, "estimated_cost": 2,
                         },
@@ -198,7 +209,7 @@ def build_formal_research_router(
                     "limitations": ["local indexed fixture", "no external tools", "no LLM synthesis"],
                 }
             created = durable.create_run(
-                principal, company=payload.company, question=payload.question,
+                principal, company=company, question=payload.question,
                 idempotency_key=idempotency_key, plan=plan, owner_id="api-dispatch",
                 enqueue_kind=_job_kind(execution_profile),
             )

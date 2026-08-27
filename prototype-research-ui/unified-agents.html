@@ -1281,7 +1281,7 @@
 
     async function loadCases() {
       try {
-        const cases = await api('/cases');
+        const cases = await api('/research/cases');
         const overrides = readOverrides();
         const visible = cases.filter(item => !overrides.deleted.has(item.latest_task_id) && !overrides.deleted.has(item.id));
         if (!visible.length && !runtime.pendingCaseId) {
