@@ -364,6 +364,45 @@ class ControlledToolsResearchProcessor:
                 return bars
         return []
 
+    def _technical_summary(self, bars: list[dict]) -> dict | None:
+        """Derive a few deterministic technical observations from OHLCV bars."""
+        if not bars or len(bars) < 2:
+            return None
+        closes = [float(bar.get("close") or 0) for bar in bars]
+        latest = closes[-1]
+
+        def ma(window: int):
+            if len(closes) < window:
+                return None
+            return round(sum(closes[-window:]) / window, 2)
+
+        ma20 = ma(20)
+        ma60 = ma(60)
+        ma120 = ma(120)
+        recent_lows = [float(bar.get("low") or 0) for bar in bars[-20:]]
+        recent_highs = [float(bar.get("high") or 0) for bar in bars[-20:]]
+        trend = "震荡"
+        if ma20 is not None and ma60 is not None:
+            if ma20 > ma60 and latest >= ma60:
+                trend = "多头"
+            elif ma20 < ma60 and latest < ma60:
+                trend = "空头"
+        position_vs_ma60 = None
+        if ma60 is not None and ma60 > 0:
+            position_vs_ma60 = round((latest / ma60 - 1) * 100, 2)
+        return {
+            "latest_close": latest,
+            "ma20": ma20,
+            "ma60": ma60,
+            "ma120": ma120,
+            "trend": trend,
+            "position_vs_ma60": position_vs_ma60,
+            "window_low": round(min(recent_lows), 2) if recent_lows else None,
+            "window_high": round(max(recent_highs), 2) if recent_highs else None,
+            "bars": len(bars),
+        }
+
+
     def _collect_evidence_and_claims(self, run_id, plan_version, steps_by_id):
         """Walk succeeded run_steps and collect (evidence, claim) tuples for the
         verified report. Each non-synthesis step's output becomes a piece of
@@ -680,6 +719,7 @@ class ControlledToolsResearchProcessor:
         ]
         # Preserve the AkShare price bars for the frontend sparkline.
         price_bars = self._collect_price_bars(run_id)
+        technical = self._technical_summary(price_bars)
 
         company = run.get("company") or "研究对象"
         question = plan.get("goal") or "公司研究"
@@ -715,7 +755,7 @@ class ControlledToolsResearchProcessor:
 
         if synthesized:
             markdown, report_json, citations = self._llm_report_to_output(
-                synthesized, evidence, company, question,
+                synthesized, evidence, company, question, technical,
             )
             # The durable report contract requires at least one citation. If
             # the model omitted source_urls, fall back to the deterministic
@@ -756,7 +796,14 @@ class ControlledToolsResearchProcessor:
             report_payload = report_json
             report_payload["financial_metrics"] = financial_metrics
             report_payload["price_bars"] = price_bars
+            report_payload["technical"] = technical
         else:
+            trend = (technical or {}).get("trend") or "震荡"
+            stance = "偏多" if trend == "多头" else ("偏空" if trend == "空头" else "中性/观察")
+            limitations = [
+                "non-official public APIs (cninfo / tencent) with explicit degradation",
+                "deterministic tools only, no LLM synthesis",
+            ]
             report_payload = {
                 "complete": True, "synthetic": False,
                 "execution_profile": self.execution_profile,
@@ -767,10 +814,12 @@ class ControlledToolsResearchProcessor:
                 "tool_count": len(evidence),
                 "financial_metrics": financial_metrics,
                 "price_bars": price_bars,
-                "limitations": [
-                    "non-official public APIs (cninfo / tencent) with explicit degradation",
-                    "deterministic tools only, no LLM synthesis",
-                ],
+                "technical": technical,
+                "stance": stance,
+                "bull_points": [],
+                "bear_points": [],
+                "risk_points": [{"text": item} for item in limitations],
+                "limitations": limitations,
             }
         def _hash_text(value: str) -> str:
             import hashlib
@@ -845,6 +894,7 @@ class ControlledToolsResearchProcessor:
         evidence: list[dict[str, Any]],
         company: str,
         question: str,
+        technical: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
         """Map LLM synthesis JSON back to the durable report contract.
 
@@ -911,6 +961,39 @@ class ControlledToolsResearchProcessor:
                 lines.append(f"- {point['label']}：{point['text']} {marker}".strip())
             citations.extend(section_cites)
 
+        def _append_point_section(title: str, items: list[str]) -> None:
+            if not items:
+                return
+            points = [{"label": "", "text": text[:2000]} for text in items]
+            sections_out.append({
+                "key": f"section_{len(sections_out) + 1}",
+                "title": title,
+                "content": "",
+                "points": points,
+                "source_urls": [],
+            })
+            lines.extend(["", f"## {title}", ""])
+            lines.extend(f"- {text}" for text in items)
+
+        bull_points = [
+            str(point.get("text") or "")[:2000]
+            for point in (synthesized.get("bull_points") or [])
+            if isinstance(point, dict) and point.get("text")
+        ]
+        bear_points = [
+            str(point.get("text") or "")[:2000]
+            for point in (synthesized.get("bear_points") or [])
+            if isinstance(point, dict) and point.get("text")
+        ]
+        risk_points = [
+            str(point.get("text") or "")[:2000]
+            for point in (synthesized.get("risk_points") or [])
+            if isinstance(point, dict) and point.get("text")
+        ]
+        _append_point_section("多空焦点", bull_points)
+        _append_point_section("空头视角", bear_points)
+        _append_point_section("风险提示", risk_points)
+
         markdown = "\n".join(lines)
         report_json = {
             "complete": True,
@@ -919,6 +1002,11 @@ class ControlledToolsResearchProcessor:
             "provider": synthesized.get("provider") or "deepseek_synthesis",
             "title": str(synthesized.get("title") or f"{company} 财报研究"),
             "summary": str(synthesized.get("summary") or ""),
+            "stance": str(synthesized.get("stance") or ""),
+            "bull_points": bull_points,
+            "bear_points": bear_points,
+            "risk_points": risk_points,
+            "technical": technical,
             "sections": sections_out,
             "tool_count": len(evidence),
             "limitations": [

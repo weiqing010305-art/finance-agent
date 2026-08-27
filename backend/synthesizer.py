@@ -35,6 +35,10 @@ SYNTHESIS_SYSTEM_PROMPT = """你是 FinScope 的受控综合报告 Agent。
 {
   "title": "报告标题",
   "summary": "3-5 句执行摘要",
+  "stance": "基于证据的多空研判（偏多/中性/偏空 + 一句话理由）",
+  "bull_points": [{"text": "多头观点，基于证据"}],
+  "bear_points": [{"text": "空头观点，基于证据"}],
+  "risk_points": [{"text": "关键风险，基于证据"}],
   "sections": [
     {
       "title": "章节标题",
@@ -50,8 +54,9 @@ SYNTHESIS_SYSTEM_PROMPT = """你是 FinScope 的受控综合报告 Agent。
 要求：
 1. 每个关键结论都必须引用证据中的 source_urls。
 2. 证据不足时，在 summary 中显式写出“证据不足/未知”。
-3. 保持客观，不输出买卖建议。
-4. 至少覆盖核心结论、财务与业务驱动、风险与未知。
+3. stance 必须明确（偏多/中性/偏空），并给出基于证据的理由；不得使用“短期震荡、长期看好”这类和稀泥表述。
+4. bull_points 与 bear_points 必须有来有回，体现多空对抗。
+5. 至少覆盖核心结论、财务与业务驱动、风险与未知。
 """
 
 
@@ -332,8 +337,22 @@ class DeepSeekReportSynthesizer:
                     "points": points,
                     "source_urls": source_urls,
                 })
+        def _points(key: str) -> list[dict[str, str]]:
+            raw = parsed.get(key)
+            if not isinstance(raw, list):
+                return []
+            return [
+                {"text": str(point.get("text") or "")[:2000]}
+                for point in raw
+                if isinstance(point, dict) and point.get("text")
+            ]
+
         return {
             "title": str(parsed.get("title") or "公司研究报告")[:200],
             "summary": str(parsed.get("summary") or "")[:2000],
+            "stance": str(parsed.get("stance") or "")[:500],
+            "bull_points": _points("bull_points"),
+            "bear_points": _points("bear_points"),
+            "risk_points": _points("risk_points"),
             "sections": sections,
         }

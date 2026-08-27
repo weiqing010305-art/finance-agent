@@ -170,6 +170,11 @@
     .metrics-table th{background:var(--paper);color:var(--ink);font-weight:600}
     .metrics-table tr:nth-child(even) td{background:rgba(20,90,70,.03)}
     .metrics-table td:last-child{color:var(--muted);white-space:nowrap}
+    .decision-stance{font-size:14px;font-weight:700;color:var(--pine-dark);margin:8px 0}
+    .decision-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:10px 0 18px}
+    .decision-grid>div{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+    .decision-grid h4{margin:0 0 6px;font-size:13px;color:var(--ink)}
+    .decision-grid ul{margin:0;padding-left:16px}
     .research-points{margin:12px 0 18px;padding-left:1.45em}
     .research-points li{margin:8px 0;padding-left:.3em;text-wrap:pretty}
     .research-points li::marker{color:var(--muted);font-weight:650}
@@ -1059,6 +1064,39 @@
         series: [
           {
             name: '日 K', type: 'candlestick', xAxisIndex: 0, yAxisIndex: 0,
+
+    function decisionCardMarkup(report) {
+      const stance = String(report.stance || '');
+      const bull = Array.isArray(report.bull_points) ? report.bull_points : [];
+      const bear = Array.isArray(report.bear_points) ? report.bear_points : [];
+      const risk = Array.isArray(report.risk_points) ? report.risk_points : [];
+      if (!stance && !bull.length && !bear.length && !risk.length) return '';
+      const list = (items) => items.length
+        ? `<ul class="research-points">${items.map(item => `<li>${escapeHtml(item.text || item)}</li>`).join('')}</ul>`
+        : '';
+      return `<section class="section"><h3>综合研判</h3>${stance ? `<p class="decision-stance">${escapeHtml(stance)}</p>` : ''}<div class="decision-grid">${bull.length ? `<div><h4>多头观点</h4>${list(bull)}</div>` : ''}${bear.length ? `<div><h4>空头视角</h4>${list(bear)}</div>` : ''}${risk.length ? `<div><h4>关键风险</h4>${list(risk)}</div>` : ''}</div></section>`;
+    }
+
+    function technicalMarkup(report) {
+      const t = report.technical;
+      if (!t || typeof t !== 'object') return '';
+      const row = (label, value) => value === null || value === undefined || value === ''
+        ? ''
+        : `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(String(value))}</td></tr>`;
+      const rows = [
+        row('趋势', t.trend),
+        row('最新收盘价', t.latest_close),
+        row('MA20', t.ma20),
+        row('MA60', t.ma60),
+        row('MA120', t.ma120),
+        row('相对 MA60', t.position_vs_ma60 === null || t.position_vs_ma60 === undefined ? '' : `${t.position_vs_ma60}%`),
+        row('近 20 日低点', t.window_low),
+        row('近 20 日高点', t.window_high),
+      ].filter(Boolean).join('');
+      if (!rows) return '';
+      return `<section class="section"><h3>技术面观察</h3><div class="table-wrap"><table class="metrics-table"><thead><tr><th>指标</th><th>数值</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+    }
+
             data: candles,
             itemStyle: {
               color: '#f05b4f', color0: '#31b985',
@@ -1093,7 +1131,7 @@
       const summary = report.summary || '本次研究在受控工具链中执行；巨潮/腾讯/检索任一环节失败时已显式降级。';
       ui.reportSummary.innerHTML = `<strong>核心结论：</strong>${escapeHtml(summary)} ${summaryCitations}`;
       const sections = Array.isArray(report.sections) ? report.sections : [];
-      ui.reportBody.innerHTML = priceBarsMarkup(report.price_bars) + financialMetricsMarkup(report.financial_metrics) + sections.map(section => {
+      ui.reportBody.innerHTML = decisionCardMarkup(report) + technicalMarkup(report) + priceBarsMarkup(report.price_bars) + financialMetricsMarkup(report.financial_metrics) + sections.map(section => {
         const sectionCites = (section.citations || []).map(number => citationMarkup(number, evidenceMap)).join('');
         return `<section class="section"><h3>${escapeHtml(section.title || '')}</h3><div class="section-actions"><button data-prompt="追问：${escapeHtml(section.title || '')}">追问</button><button data-prompt="重新研究：${escapeHtml(section.title || '')}">重新研究本节</button></div><div class="section-content">${formatResearchContent(section.content, section.points || [])}${sectionCites ? `<div class="section-citations">${sectionCites}</div>` : ''}</div></section>`;
       }).join('');
