@@ -407,6 +407,62 @@ class ControlledToolsResearchProcessor:
                             "url": source_url,
                             "publisher": publisher,
                         })
+            elif step_id == "fetch_prices":
+                # Flatten the quote summary into citable price claims so the
+                # final report includes the latest price and window moves.
+                quote = output.get("quote") or {}
+                ev_url = (output.get("evidence") or [{}])[0].get("url") or source_url
+                ev_pub = (output.get("evidence") or [{}])[0].get("publisher") or "AkShare"
+                if quote:
+                    latest_date = str(quote.get("latest_date") or "")
+                    latest_close = quote.get("latest_close")
+                    if latest_close is not None:
+                        flat_items.append({
+                            "period": latest_date,
+                            "name": "最新收盘价",
+                            "value": latest_close,
+                            "unit": "元",
+                            "title": f"{latest_date} 最新收盘价",
+                            "excerpt": f"最新收盘价 = {latest_close} 元 ({latest_date})".strip(),
+                            "url": ev_url,
+                            "publisher": ev_pub,
+                        })
+                    change_pct = quote.get("change_pct")
+                    if change_pct is not None:
+                        flat_items.append({
+                            "period": latest_date,
+                            "name": "区间涨跌幅",
+                            "value": round(float(change_pct), 4),
+                            "unit": "%",
+                            "title": f"{latest_date} 区间涨跌幅",
+                            "excerpt": f"区间涨跌幅 = {round(float(change_pct), 4)}% ({latest_date})".strip(),
+                            "url": ev_url,
+                            "publisher": ev_pub,
+                        })
+                    window_high = quote.get("window_high")
+                    if window_high is not None:
+                        flat_items.append({
+                            "period": latest_date,
+                            "name": "区间最高价",
+                            "value": window_high,
+                            "unit": "元",
+                            "title": f"{latest_date} 区间最高价",
+                            "excerpt": f"区间最高价 = {window_high} 元 ({latest_date})".strip(),
+                            "url": ev_url,
+                            "publisher": ev_pub,
+                        })
+                    window_low = quote.get("window_low")
+                    if window_low is not None:
+                        flat_items.append({
+                            "period": latest_date,
+                            "name": "区间最低价",
+                            "value": window_low,
+                            "unit": "元",
+                            "title": f"{latest_date} 区间最低价",
+                            "excerpt": f"区间最低价 = {window_low} 元 ({latest_date})".strip(),
+                            "url": ev_url,
+                            "publisher": ev_pub,
+                        })
             else:
                 flat_items = data
 
