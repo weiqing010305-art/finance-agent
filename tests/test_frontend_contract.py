@@ -143,7 +143,7 @@ def test_frontend_renders_quick_result_before_task_completion() -> None:
 
     # fetch streaming 逐块解析 SSE 事件：handleStreamEvent 处理 message/trace
     assert "function handleStreamEvent(taskId, event)" in source
-    assert "if (event.message) appendLog(event);" in source
+    assert "appendLog(event);" in source
     assert "handleStreamEvent(taskId, event)" in stream_body
     # 终态后仍会拉取最终任务
     assert "await api(`/research/${taskId}`)" in stream_body
@@ -162,7 +162,7 @@ def test_frontend_streams_report_draft_without_polluting_trace() -> None:
     # report.delta 处理在 handleStreamEvent 内
     assert "event.kind === 'report.delta'" in source
     assert "appendReportDelta(event.payload.delta)" in source
-    assert "if (event.message) appendLog(event);" in source
+    assert "appendLog(event);" in source
     assert "resetStreamingDraft()" in source
 
 

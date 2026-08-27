@@ -984,6 +984,20 @@
       ui.reportBody.innerHTML = '';
       ui.reportDraft.innerHTML = `${markdownDraftMarkup(runtime.draftText)}<span class="streaming-cursor" aria-hidden="true"></span>`;
       requestAnimationFrame(() => {
+
+    function appendLiveThinking(message) {
+      if (!message) return;
+      if (!runtime.draftText) runtime.draftText = '正在实时生成研究…\n';
+      runtime.draftText += `- ${message}\n`;
+      ui.reportDraft.hidden = false;
+      ui.reportBody.innerHTML = '<p class="empty-state">研究进行中，正在逐步生成报告…</p>';
+      ui.reportDraft.innerHTML = `${markdownDraftMarkup(runtime.draftText)}<span class="streaming-cursor" aria-hidden="true"></span>`;
+      requestAnimationFrame(() => {
+        const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+        ui.reportDraft.scrollIntoView({ behavior, block: 'end' });
+      });
+    }
+
         const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
         ui.reportDraft.scrollIntoView({ behavior, block: 'end' });
       });
@@ -1393,7 +1407,11 @@
 
       // 1) Trace row for every event with a message.
       if (!event.message) event.message = traceMessageForEvent(event);
-      if (event.message) appendLog(event);
+      if (event.message) {
+        appendLog(event);
+        const currentStatus = String(event.status || '').toLowerCase();
+        if (!TERMINAL.has(currentStatus)) appendLiveThinking(event.message);
+      }
       // 2) Streaming report delta (controlled-tools currently emits none, but
       //     keep the hook for the DeepSeek prototype).
       if (event.kind === 'report.delta' && event.payload && typeof event.payload.delta === 'string') {
