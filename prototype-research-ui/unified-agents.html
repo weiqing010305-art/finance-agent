@@ -1304,7 +1304,7 @@
 
     async function loadCases() {
       try {
-        const cases = await api('/research/cases');
+        const cases = await api('/research/cases?limit=200');
         const overrides = readOverrides();
         const visible = cases.filter(item => !overrides.deleted.has(item.latest_task_id) && !overrides.deleted.has(item.id));
         if (!visible.length && !runtime.pendingCaseId) {
@@ -1317,7 +1317,7 @@
           if (ap !== bp) return ap - bp;
           return 0;
         });
-        ui.caseList.innerHTML = pendingCaseHtml() + ordered.slice(0, 8).map(item => {
+        ui.caseList.innerHTML = pendingCaseHtml() + ordered.map(item => {
           const isPinned = overrides.pins.has(item.latest_task_id);
           const isSelected = item.latest_task_id === runtime.taskId;
           const status = displayStatus(item);
